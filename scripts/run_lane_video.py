@@ -1,5 +1,6 @@
 
 from pathlib import Path
+import csv
 import time
 
 import cv2
@@ -12,12 +13,12 @@ from src.lanes.lane_detector import detect_lane
 # --------------------------------------------------
 
 VIDEO_PATH = Path("data/videos/test_drive.mp4")
-OUTPUT_PATH = Path("runs/lane_output.mp4")
 
-OUTPUT_PATH.parent.mkdir(
-    parents=True,
-    exist_ok=True
-)
+OUTPUT_PATH = Path("runs/lane_output.mp4")
+CSV_PATH = Path("runs/lane_results.csv")
+
+OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 # --------------------------------------------------
@@ -56,9 +57,7 @@ writer = cv2.VideoWriter(
 
 if not writer.isOpened():
     cap.release()
-    raise RuntimeError(
-        f"Could not create output video: {OUTPUT_PATH}"
-    )
+    raise RuntimeError("Could not create output video")
 
 
 # --------------------------------------------------
@@ -76,70 +75,144 @@ start_total = time.perf_counter()
 
 
 # --------------------------------------------------
-# 5. Process video frame by frame
+# 5. Video processing and CSV logging
 # --------------------------------------------------
 
 try:
-    while True:
+    with CSV_PATH.open("w", newline="") as csv_file:
 
-        # Read next frame
-        success, frame = cap.read()
+        csv_writer = csv.writer(csv_file)
 
-        if not success:
-            break
+        # One row per video frame
+        csv_writer.writerow([
+            "frame",
+            "timestamp",
+            "valid",
+            "left_segments",
+            "right_segments",
+            "left_bottom_x",
+            "right_bottom_x",
+            "left_top_x",
+            "right_top_x",
+            "bottom_width",
+            "top_width",
+        ])
 
-        frame_count += 1
+        while True:
 
-        # --------------------------------------
-        # Run lane detection
-        # --------------------------------------
+            success, frame = cap.read()
 
-        start_detection = time.perf_counter()
+            if not success:
+                break
 
-        annotated_frame, lane_info = detect_lane(frame)
+            frame_count += 1
+            timestamp = (frame_count - 1) / fps
 
-        detection_time = (
-            time.perf_counter() - start_detection
-        )
+            # ----------------------------------
+            # Run lane detection
+            # ----------------------------------
 
-        total_lane_processing_time += detection_time
+            start_detection = time.perf_counter()
 
-        # --------------------------------------
-        # Evaluate geometric validity
-        # --------------------------------------
+            annotated_frame, lane_info = detect_lane(frame)
 
-        if lane_info["valid"]:
-            valid_lane_frames += 1
-        else:
-            invalid_lane_frames += 1
-
-        # --------------------------------------
-        # Save annotated frame
-        # --------------------------------------
-
-        writer.write(annotated_frame)
-
-        # --------------------------------------
-        # Print progress
-        # --------------------------------------
-
-        if frame_count % 100 == 0:
-
-            print(
-                f"Processed {frame_count} frames | "
-                f"Valid: {valid_lane_frames} | "
-                f"Invalid: {invalid_lane_frames}"
+            detection_time = (
+                time.perf_counter() - start_detection
             )
 
-finally:
+            total_lane_processing_time += detection_time
 
-    # Always release video resources
+            # ----------------------------------
+            # Extract lane information
+            # ----------------------------------
+
+            valid = lane_info["valid"]
+
+            left_fit = lane_info["left_fit"]
+            right_fit = lane_info["right_fit"]
+
+            left_segments = lane_info["left_segments"]
+            right_segments = lane_info["right_segments"]
+
+            if valid:
+                valid_lane_frames += 1
+            else:
+                invalid_lane_frames += 1
+
+            # Empty values indicate unavailable estimates
+            left_bottom_x = None
+            right_bottom_x = None
+
+            left_top_x = None
+            right_top_x = None
+
+            bottom_width = None
+            top_width = None
+
+            # Extract each boundary independently.
+            # This also logs estimates in invalid frames
+            # when a boundary is available.
+            if left_fit is not None:
+                left_bottom_x = left_fit[0]
+                left_top_x = left_fit[2]
+
+            if right_fit is not None:
+                right_bottom_x = right_fit[0]
+                right_top_x = right_fit[2]
+
+            # Width is defined only when both
+            # boundary estimates are available.
+            if left_fit is not None and right_fit is not None:
+                bottom_width = (
+                    right_bottom_x - left_bottom_x
+                )
+
+                top_width = (
+                    right_top_x - left_top_x
+                )
+
+            # ----------------------------------
+            # Write CSV row
+            # ----------------------------------
+
+            csv_writer.writerow([
+                frame_count,
+                round(timestamp, 3),
+                valid,
+                left_segments,
+                right_segments,
+                left_bottom_x,
+                right_bottom_x,
+                left_top_x,
+                right_top_x,
+                bottom_width,
+                top_width,
+            ])
+
+            # ----------------------------------
+            # Write annotated video frame
+            # ----------------------------------
+
+            writer.write(annotated_frame)
+
+            # ----------------------------------
+            # Print progress
+            # ----------------------------------
+
+            if frame_count % 100 == 0:
+                print(
+                    f"Processed {frame_count} frames | "
+                    f"Valid: {valid_lane_frames} | "
+                    f"Invalid: {invalid_lane_frames}"
+                )
+
+finally:
     cap.release()
     writer.release()
 
 
 # --------------------------------------------------
-# 6. Calculate performance
+# 6. Performance summary
 # --------------------------------------------------
 
 total_runtime = time.perf_counter() - start_total
@@ -158,18 +231,6 @@ if frame_count > 0:
         total_lane_processing_time / frame_count
     )
 
-    detection_fps = (
-        1 / avg_detection_time
-        if avg_detection_time > 0
-        else 0
-    )
-
-    end_to_end_fps = (
-        frame_count / total_runtime
-        if total_runtime > 0
-        else 0
-    )
-
     print(
         f"Lane validation rate: "
         f"{validation_rate:.2%}"
@@ -180,15 +241,19 @@ if frame_count > 0:
         f"{avg_detection_time * 1000:.2f} ms/frame"
     )
 
-    print(
-        f"Lane processing FPS: "
-        f"{detection_fps:.2f}"
-    )
+    if avg_detection_time > 0:
+        print(
+            f"Lane processing FPS: "
+            f"{1 / avg_detection_time:.2f}"
+        )
 
-    print(
-        f"End-to-end throughput: "
-        f"{end_to_end_fps:.2f} FPS"
-    )
+    if total_runtime > 0:
+        print(
+            f"End-to-end throughput: "
+            f"{frame_count / total_runtime:.2f} FPS"
+        )
 
-print(f"Output video: {OUTPUT_PATH}")
+print(f"\nOutput video: {OUTPUT_PATH}")
+print(f"Output CSV: {CSV_PATH}")
+
 print("\nProcessing complete!")
