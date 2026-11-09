@@ -144,3 +144,38 @@ We selected the threshold-only configuration (`new_track_thresh=0.40`, `track_bu
 This choice is not yet validated as the most accurate configuration for an ADAS system, since it also reduced the number of tracked observations.
 
 The next steps are to compare ByteTrack with BoT-SORT, evaluate identity continuity visually or against annotated trajectories, and benchmark processing latency before integrating lane perception.
+
+## 8. ByteTrack vs BoT-SORT Comparison
+
+To evaluate an alternative multi-object tracking approach, we compared the selected threshold-tuned ByteTrack configuration against default BoT-SORT on the same forward-facing highway video.
+
+Both experiments used YOLO11n, a detection confidence threshold of 0.25, and Apple Silicon MPS acceleration.
+
+### Experimental Results
+
+| Metric | ByteTrack (tuned) | BoT-SORT (default) |
+|---|---:|---:|
+| Tracked observations | 2,656 | 2,829 |
+| Unique track IDs | 68 | 118 |
+| Short-lived tracks | 15 | 49 |
+| Mean track span | 1.475 s | 0.854 s |
+| Median track span | 0.483 s | 0.250 s |
+| Frame coverage | 79.75% | 79.98% |
+| Mean processing time | 14.83 ms | 19.09 ms |
+| End-to-end throughput | 49.12 FPS | 40.50 FPS |
+
+### Discussion
+
+Tuned ByteTrack produced fewer short-lived tracks and longer average track spans while achieving approximately 21.3% higher end-to-end throughput.
+
+BoT-SORT produced approximately 6.5% more tracked observations and slightly higher frame coverage, indicating a trade-off between tracking coverage and track persistence metrics.
+
+These results do not establish that ByteTrack has higher tracking accuracy. The comparison used tuned ByteTrack and default BoT-SORT, and no annotated ground-truth trajectories were available to calculate identity-switch counts or identity-based accuracy metrics.
+
+### Decision
+
+We retained YOLO11n with threshold-tuned ByteTrack as the provisional tracking pipeline for RoadVision.
+
+This choice prioritizes computational efficiency and the observed reduction in short-lived tracks, while acknowledging the loss of some tracked observations.
+
+Future evaluation should include equivalent tracker parameter configurations, manually annotated vehicle trajectories, and more diverse urban driving scenes.

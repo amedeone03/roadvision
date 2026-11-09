@@ -1,7 +1,8 @@
 
-from pathlib import Path
+import argparse
 import csv
 import time
+from pathlib import Path
 
 import cv2
 import torch
@@ -9,46 +10,92 @@ from ultralytics import YOLO
 
 
 # --------------------------------------------------
-# 1. Configuration
+# 1. Command-line arguments
 # --------------------------------------------------
 
-# Input video
-VIDEO_PATH = Path("data/videos/test_drive.mp4")
+parser = argparse.ArgumentParser(
+    description="RoadVision multi-object tracking"
+)
 
-# Selected model and tracker
-MODEL_PATH = "yolo11n.pt"
-TRACKER = "configs/bytetrack_threshold.yaml"
+parser.add_argument(
+    "--video",
+    type=Path,
+    default=Path("data/videos/test_drive.mp4"),
+)
 
-# Detection settings
-CONFIDENCE = 0.25
+parser.add_argument(
+    "--model",
+    type=str,
+    default="yolo11n.pt",
+)
 
-# COCO classes:
-# 0 = person, 1 = bicycle, 2 = car,
-# 3 = motorcycle, 5 = bus, 7 = truck
+parser.add_argument(
+    "--tracker",
+    type=str,
+    default="configs/bytetrack_threshold.yaml",
+)
+
+parser.add_argument(
+    "--output-name",
+    type=str,
+    default="selected",
+)
+
+parser.add_argument(
+    "--conf",
+    type=float,
+    default=0.25,
+)
+
+parser.add_argument(
+    "--device",
+    type=str,
+    default="mps",
+)
+
+args = parser.parse_args()
+
+if not 0 <= args.conf <= 1:
+    parser.error("--conf must be between 0 and 1")
+
+if not args.output_name.replace("-", "").replace("_", "").isalnum():
+    parser.error(
+        "--output-name must contain only letters, "
+        "numbers, hyphens, or underscores"
+    )
+
+
+# --------------------------------------------------
+# 2. Configuration
+# --------------------------------------------------
+
+VIDEO_PATH = args.video
+MODEL_PATH = args.model
+TRACKER = args.tracker
+CONFIDENCE = args.conf
+DEVICE = args.device
+
 ROAD_USER_CLASSES = [0, 1, 2, 3, 5, 7]
 
-# Output files
-OUTPUT_PATH = Path("runs/tracking_selected.mp4")
-CSV_PATH = Path("runs/tracking_selected.csv")
+OUTPUT_DIR = Path("runs")
+OUTPUT_PATH = OUTPUT_DIR / f"tracking_{args.output_name}.mp4"
+CSV_PATH = OUTPUT_DIR / f"tracking_{args.output_name}.csv"
 
-# Hardware acceleration
-DEVICE = "mps"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+print("\n--- ROADVISION CONFIGURATION ---")
+print(f"Model: {MODEL_PATH}")
+print(f"Tracker: {TRACKER}")
+print(f"Confidence: {CONFIDENCE}")
+print(f"Device: {DEVICE}")
+print(f"Video: {VIDEO_PATH}")
 
 
 # --------------------------------------------------
-# 2. Load YOLO model
+# 3. Initialize model and video
 # --------------------------------------------------
 
 model = YOLO(MODEL_PATH)
-
-print(f"Model: {MODEL_PATH}")
-print(f"Tracker: {TRACKER}")
-print(f"Device: {DEVICE}")
-
-
-# --------------------------------------------------
-# 3. Open input video
-# --------------------------------------------------
 
 cap = cv2.VideoCapture(str(VIDEO_PATH))
 
@@ -63,22 +110,13 @@ if fps <= 0 or width <= 0 or height <= 0:
     cap.release()
     raise RuntimeError("Invalid video metadata")
 
-print(f"Video: {width}x{height} at {fps:.1f} FPS")
+print(f"Resolution: {width}x{height}")
+print(f"Input FPS: {fps:.1f}")
 
 
 # --------------------------------------------------
-# 4. Prepare output files
+# 4. Prepare output video
 # --------------------------------------------------
-
-OUTPUT_PATH.parent.mkdir(
-    parents=True,
-    exist_ok=True
-)
-
-CSV_PATH.parent.mkdir(
-    parents=True,
-    exist_ok=True
-)
 
 writer = cv2.VideoWriter(
     str(OUTPUT_PATH),
@@ -89,32 +127,31 @@ writer = cv2.VideoWriter(
 
 if not writer.isOpened():
     cap.release()
-    raise RuntimeError(
-        f"Cannot create output video: {OUTPUT_PATH}"
-    )
+    raise RuntimeError("Cannot create output video")
 
 
 # --------------------------------------------------
-# 5. Initialize tracking statistics
+# 5. Tracking statistics
 # --------------------------------------------------
 
 frame_count = 0
-total_time = 0.0
+total_processing_time = 0.0
 total_detections = 0
-
 unique_ids = set()
+
+# Measure full loop runtime separately
+start_total = time.perf_counter()
 
 
 # --------------------------------------------------
-# 6. Process video frame by frame
+# 6. Video processing
 # --------------------------------------------------
 
 try:
-    with open(CSV_PATH, "w", newline="") as csv_file:
+    with CSV_PATH.open("w", newline="") as csv_file:
 
         csv_writer = csv.writer(csv_file)
 
-        # CSV header
         csv_writer.writerow([
             "frame",
             "timestamp",
@@ -128,25 +165,17 @@ try:
         ])
 
         while True:
-
-            # Read next frame
             success, frame = cap.read()
 
             if not success:
                 break
 
             frame_count += 1
-
-            # Timestamp in seconds
             timestamp = (frame_count - 1) / fps
 
-            # Start processing timer
             start = time.perf_counter()
 
-            # ----------------------------------
-            # YOLO detection + ByteTrack
-            # ----------------------------------
-
+            # Detection + tracking
             results = model.track(
                 frame,
                 persist=True,
@@ -159,50 +188,31 @@ try:
 
             result = results[0]
 
-            # ----------------------------------
-            # Extract tracked objects
-            # ----------------------------------
-
+            # Save tracked objects
             if (
                 result.boxes is not None
                 and result.boxes.id is not None
             ):
-
                 boxes = result.boxes
 
-                track_ids = (
-                    boxes.id.int().cpu().tolist()
-                )
+                track_ids = boxes.id.int().cpu().tolist()
+                class_ids = boxes.cls.int().cpu().tolist()
+                confidences = boxes.conf.cpu().tolist()
+                coordinates = boxes.xyxy.cpu().tolist()
 
-                class_ids = (
-                    boxes.cls.int().cpu().tolist()
-                )
-
-                confidences = (
-                    boxes.conf.cpu().tolist()
-                )
-
-                coordinates = (
-                    boxes.xyxy.cpu().tolist()
-                )
-
-                # Save each tracked object to CSV
                 for track_id, class_id, conf, box in zip(
                     track_ids,
                     class_ids,
                     confidences,
                     coordinates,
                 ):
-
                     x1, y1, x2, y2 = box
-
-                    class_name = model.names[class_id]
 
                     csv_writer.writerow([
                         frame_count,
                         round(timestamp, 3),
                         track_id,
-                        class_name,
+                        model.names[class_id],
                         round(conf, 4),
                         round(x1, 2),
                         round(y1, 2),
@@ -213,75 +223,61 @@ try:
                     unique_ids.add(track_id)
                     total_detections += 1
 
-            # ----------------------------------
-            # Annotate frame
-            # ----------------------------------
-
+            # Draw boxes, labels, and IDs
             annotated = result.plot()
 
-            # Ensure GPU processing is finished
-            # before stopping the timer
+            # Synchronize GPU for timing
             if DEVICE == "mps":
                 torch.mps.synchronize()
+            elif DEVICE.startswith("cuda"):
+                torch.cuda.synchronize()
 
-            elapsed = time.perf_counter() - start
-            total_time += elapsed
+            processing_time = time.perf_counter() - start
+            total_processing_time += processing_time
 
-            # Write annotated frame
             writer.write(annotated)
 
-            # Print progress every 30 frames
             if frame_count % 30 == 0:
-
                 print(
-                    f"Processed {frame_count} frames | "
+                    f"Frames: {frame_count} | "
                     f"Unique IDs: {len(unique_ids)}"
                 )
 
 finally:
-
-    # Always release video resources
     cap.release()
     writer.release()
 
+total_runtime = time.perf_counter() - start_total
+
 
 # --------------------------------------------------
-# 7. Final performance summary
+# 7. Final results
 # --------------------------------------------------
+
+print("\n--- TRACKING RESULTS ---")
+
+print(f"Tracker: {TRACKER}")
+print(f"Frames processed: {frame_count}")
+print(f"Tracked observations: {total_detections}")
+print(f"Unique IDs: {len(unique_ids)}")
 
 if frame_count > 0:
-
-    avg_time = total_time / frame_count
-
-    processing_fps = 1 / avg_time
-
-    print("\n--- TRACKING COMPLETE ---")
-
-    print(f"Frames processed: {frame_count}")
+    avg_time = total_processing_time / frame_count
 
     print(
-        f"Total tracked detections: "
-        f"{total_detections}"
-    )
-
-    print(
-        f"Unique track IDs: "
-        f"{len(unique_ids)}"
-    )
-
-    print(
-        f"Average processing time: "
-        f"{avg_time * 1000:.1f} ms"
+        f"Mean tracking + annotation time: "
+        f"{avg_time * 1000:.2f} ms/frame"
     )
 
     print(
         f"Processing FPS: "
-        f"{processing_fps:.1f}"
+        f"{1 / avg_time:.2f}"
     )
 
-    print(f"Video saved to: {OUTPUT_PATH}")
-    print(f"CSV saved to: {CSV_PATH}")
+    print(
+        f"End-to-end throughput: "
+        f"{frame_count / total_runtime:.2f} FPS"
+    )
 
-else:
-
-    print("No frames were processed.")
+print(f"Video saved to: {OUTPUT_PATH}")
+print(f"CSV saved to: {CSV_PATH}")
