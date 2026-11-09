@@ -21,3 +21,24 @@ Python, PyTorch, OpenCV, YOLO, NumPy
 ## Development
 
 Phase 0: Project setup
+
+
+## Experiments and Evaluation
+
+RoadVision includes quantitative experiments to evaluate
+the computer vision pipeline.
+
+### Multi-Object Tracking
+
+We implemented ByteTrack and evaluated four parameter
+configurations using a controlled ablation study.
+
+Increasing the new-track confidence threshold reduced
+short-lived tracks by 46.4%, while decreasing tracked
+observations by 5.1%.
+
+These are proxy metrics and do not establish improved
+identity-tracking accuracy.
+
+See the [tracking experiments report](docs/tracking_experiments.md)
+for the methodology, results, and limitations.

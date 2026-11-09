@@ -9,11 +9,11 @@ from ultralytics import YOLO
 
 # 1. Configuration
 VIDEO_PATH = Path("data/videos/test_drive.mp4")
-OUTPUT_PATH = Path("runs/tracking_tuned.mp4")
-CSV_PATH = Path("runs/tracking_tuned.csv")
+OUTPUT_PATH = Path("runs/tracking_buffer.mp4")
+CSV_PATH = Path("runs/tracking_buffer.csv")
 
 MODEL_PATH = "yolo11n.pt"
-TRACKER = "configs/bytetrack_tuned.yaml"
+TRACKER = "configs/bytetrack_buffer.yaml"
 
 CONFIDENCE = 0.25
 ROAD_USER_CLASSES = [0, 1, 2, 3, 5, 7]
