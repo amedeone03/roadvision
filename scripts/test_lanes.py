@@ -58,6 +58,45 @@ def fit_lane_line(segments, y_bottom, y_top):
         y_top
     )
 
+
+def validate_lane_polygon(left_fit, right_fit, image_width):
+    """
+    Validate basic geometric consistency of the lane polygon.
+
+    Both lines must use the same top and bottom Y coordinates.
+
+    Returns True if the basic checks pass.
+    """
+
+    if left_fit is None or right_fit is None:
+        return False
+
+    left_bottom_x, left_bottom_y, left_top_x, left_top_y = left_fit
+    right_bottom_x, right_bottom_y, right_top_x, right_top_y = right_fit
+
+    # Both boundaries must share the same vertical range
+    if (
+        left_bottom_y != right_bottom_y
+        or left_top_y != right_top_y
+        or left_top_y >= left_bottom_y
+    ):
+        return False
+
+    # Calculate image-space lane widths
+    bottom_width = right_bottom_x - left_bottom_x
+    top_width = right_top_x - left_top_x
+
+    # Prevent crossing or reversed boundaries
+    if bottom_width <= 0 or top_width <= 0:
+        return False
+
+    # Reject extremely wide polygons
+    if bottom_width >= image_width or top_width >= image_width:
+        return False
+
+    return True
+
+
 # --------------------------------------------------
 # 1. Configuration
 # --------------------------------------------------
@@ -348,7 +387,77 @@ if right_fit is not None:
     )
 
 # --------------------------------------------------
-# 15. Draw ROI on original frame
+# 15. Construct ego-lane polygon
+# --------------------------------------------------
+
+lane_visualization = frame.copy()
+
+valid_lane = validate_lane_polygon(
+    left_fit,
+    right_fit,
+    width
+)
+
+if valid_lane:
+
+    left_bottom_x, y_bottom, left_top_x, y_top = left_fit
+    right_bottom_x, _, right_top_x, _ = right_fit
+
+    polygon = np.array([
+        [
+            [left_bottom_x, y_bottom],
+            [left_top_x, y_top],
+            [right_top_x, y_top],
+            [right_bottom_x, y_bottom],
+        ]
+    ], dtype=np.int32)
+
+        # Create a separate overlay
+    overlay = frame.copy()
+
+    # Fill the estimated lane area in green
+    cv2.fillPoly(
+        overlay,
+        polygon,
+        color=(0, 255, 0)
+    )
+
+    # Blend the overlay with the original frame
+    alpha = 0.25
+
+    lane_visualization = cv2.addWeighted(
+        overlay,
+        alpha,
+        frame,
+        1 - alpha,
+        0
+    )
+
+    # Draw the left boundary
+    cv2.line(
+        lane_visualization,
+        (left_bottom_x, y_bottom),
+        (left_top_x, y_top),
+        (0, 255, 0),
+        6
+    )
+
+    # Draw the right boundary
+    cv2.line(
+        lane_visualization,
+        (right_bottom_x, y_bottom),
+        (right_top_x, y_top),
+        (255, 0, 0),
+        6
+    )
+
+    print("Lane polygon: VALID")
+
+else:
+    print("Lane polygon: INVALID")
+
+# --------------------------------------------------
+# 16. Draw ROI on original frame
 # --------------------------------------------------
 
 roi_visualization = frame.copy()
@@ -363,7 +472,7 @@ cv2.polylines(
 
 
 # --------------------------------------------------
-# 16. Save all intermediate results
+# 17. Save all intermediate results
 # --------------------------------------------------
 
 images = {
@@ -377,6 +486,7 @@ images = {
     "hough_lines.png": hough_visualization,
     "filtered_lines.png": filtered_visualization,
     "fitted_lanes.png": fitted_visualization,
+    "ego_lane.png": lane_visualization,
 }
 
 for filename, image in images.items():
@@ -390,7 +500,7 @@ for filename, image in images.items():
 
 
 # --------------------------------------------------
-# 17. Print summary
+# 18. Print summary
 # --------------------------------------------------
 
 print("\n--- LANE PREPROCESSING COMPLETE ---")
