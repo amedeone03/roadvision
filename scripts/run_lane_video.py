@@ -4,9 +4,11 @@ import csv
 import time
 
 import cv2
+import numpy as np
 
 from src.lanes.lane_detector import detect_lane
 from src.lanes.temporal_filter import TemporalLaneFilter
+from src.lanes.lane_smoother import LaneSmoother
 
 
 # --------------------------------------------------
@@ -15,25 +17,95 @@ from src.lanes.temporal_filter import TemporalLaneFilter
 
 VIDEO_PATH = Path("data/videos/test_drive.mp4")
 
-OUTPUT_PATH = Path("runs/lane_temporal_output.mp4")
-CSV_PATH = Path("runs/lane_temporal_results.csv")
+OUTPUT_PATH = Path("runs/lane_smoothed_output.mp4")
+CSV_PATH = Path("runs/lane_smoothed_results.csv")
 
-# Experimental temporal filtering parameters
+# Experimental temporal filter parameters
 MAX_JUMP = 100
 MAX_REFERENCE_AGE = 5
+MAX_CANDIDATE_GAP = 2
+
+# Exponential moving average parameter
+EMA_ALPHA = 0.3
 
 OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 # --------------------------------------------------
-# 2. Open input video
+# 2. Draw smoothed lane
+# --------------------------------------------------
+
+def draw_smoothed_lane(frame, left_fit, right_fit):
+    """
+    Draw the smoothed ego-lane polygon.
+
+    The input frame is never modified in place.
+    """
+
+    annotated = frame.copy()
+
+    if left_fit is None or right_fit is None:
+        return annotated
+
+    lb_x, lb_y, lt_x, lt_y = left_fit
+    rb_x, rb_y, rt_x, rt_y = right_fit
+
+    polygon = np.array([[
+        [lb_x, lb_y],
+        [lt_x, lt_y],
+        [rt_x, rt_y],
+        [rb_x, rb_y],
+    ]], dtype=np.int32)
+
+    overlay = frame.copy()
+
+    # Semi-transparent green lane area
+    cv2.fillPoly(
+        overlay,
+        polygon,
+        (0, 255, 0),
+    )
+
+    annotated = cv2.addWeighted(
+        overlay,
+        0.25,
+        frame,
+        0.75,
+        0,
+    )
+
+    # Left boundary: green
+    cv2.line(
+        annotated,
+        (lb_x, lb_y),
+        (lt_x, lt_y),
+        (0, 255, 0),
+        6,
+    )
+
+    # Right boundary: blue
+    cv2.line(
+        annotated,
+        (rb_x, rb_y),
+        (rt_x, rt_y),
+        (255, 0, 0),
+        6,
+    )
+
+    return annotated
+
+
+# --------------------------------------------------
+# 3. Open input video
 # --------------------------------------------------
 
 cap = cv2.VideoCapture(str(VIDEO_PATH))
 
 if not cap.isOpened():
-    raise RuntimeError(f"Cannot open video: {VIDEO_PATH}")
+    raise RuntimeError(
+        f"Cannot open input video: {VIDEO_PATH}"
+    )
 
 fps = cap.get(cv2.CAP_PROP_FPS)
 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -43,16 +115,19 @@ if fps <= 0 or width <= 0 or height <= 0:
     cap.release()
     raise RuntimeError("Invalid video metadata")
 
-print("\n--- ROADVISION TEMPORAL LANE DETECTION ---")
+print("\n--- ROADVISION: SMOOTHED LANE DETECTION ---")
 print(f"Input video: {VIDEO_PATH}")
 print(f"Resolution: {width}x{height}")
 print(f"Input FPS: {fps:.1f}")
-print(f"Maximum endpoint jump: {MAX_JUMP} px")
+
+print(f"Maximum jump: {MAX_JUMP} px")
 print(f"Maximum reference age: {MAX_REFERENCE_AGE} frames")
+print(f"Maximum candidate gap: {MAX_CANDIDATE_GAP} frames")
+print(f"EMA alpha: {EMA_ALPHA}")
 
 
 # --------------------------------------------------
-# 3. Create output video
+# 4. Create output video
 # --------------------------------------------------
 
 writer = cv2.VideoWriter(
@@ -70,18 +145,23 @@ if not writer.isOpened():
 
 
 # --------------------------------------------------
-# 4. Initialize temporal filter and statistics
+# 5. Initialize stateful components
 # --------------------------------------------------
 
 lane_filter = TemporalLaneFilter(
     max_jump=MAX_JUMP,
     max_reference_age=MAX_REFERENCE_AGE,
+    max_candidate_gap=MAX_CANDIDATE_GAP,
+)
+
+lane_smoother = LaneSmoother(
+    alpha=EMA_ALPHA,
 )
 
 frame_count = 0
 
-valid_lane_frames = 0
-invalid_lane_frames = 0
+geometrically_valid_frames = 0
+geometrically_invalid_frames = 0
 
 temporally_accepted_frames = 0
 temporally_rejected_frames = 0
@@ -92,7 +172,7 @@ start_total = time.perf_counter()
 
 
 # --------------------------------------------------
-# 5. Process video and log results
+# 6. Process video and write CSV
 # --------------------------------------------------
 
 try:
@@ -100,7 +180,6 @@ try:
 
         csv_writer = csv.writer(csv_file)
 
-        # One row per video frame
         csv_writer.writerow([
             "frame",
             "timestamp",
@@ -115,12 +194,16 @@ try:
             "top_width",
             "temporal_accepted",
             "temporal_reason",
+            "smoothed_left_bottom_x",
+            "smoothed_right_bottom_x",
+            "smoothed_left_top_x",
+            "smoothed_right_top_x",
         ])
 
         while True:
 
             # --------------------------------------
-            # Read frame
+            # Read next video frame
             # --------------------------------------
 
             success, frame = cap.read()
@@ -130,17 +213,16 @@ try:
 
             frame_count += 1
 
-            # CSV frame numbers are 1-based;
-            # timestamps start at zero.
+            # First video frame corresponds to t = 0.
             timestamp = (frame_count - 1) / fps
 
             # --------------------------------------
-            # Run lane detection
+            # 6.1 Raw lane detection
             # --------------------------------------
 
             start_detection = time.perf_counter()
 
-            annotated_frame, lane_info = detect_lane(frame)
+            _, lane_info = detect_lane(frame)
 
             detection_time = (
                 time.perf_counter() - start_detection
@@ -148,8 +230,13 @@ try:
 
             total_lane_processing_time += detection_time
 
+            # We discard the image returned by
+            # detect_lane(), because it contains the
+            # raw polygon. We will draw the smoothed
+            # polygon after temporal filtering.
+
             # --------------------------------------
-            # Geometric validation statistics
+            # 6.2 Geometric validation
             # --------------------------------------
 
             valid = lane_info["valid"]
@@ -161,12 +248,12 @@ try:
             right_segments = lane_info["right_segments"]
 
             if valid:
-                valid_lane_frames += 1
+                geometrically_valid_frames += 1
             else:
-                invalid_lane_frames += 1
+                geometrically_invalid_frames += 1
 
             # --------------------------------------
-            # Temporal consistency filtering
+            # 6.3 Temporal consistency filtering
             # --------------------------------------
 
             temporal_accepted, temporal_reason = (
@@ -181,16 +268,37 @@ try:
             else:
                 temporally_rejected_frames += 1
 
-                # The lane detector may have drawn a
-                # geometrically valid polygon before
-                # temporal filtering rejected it.
-                #
-                # Return to the original frame so
-                # rejected polygons are not displayed.
+            # --------------------------------------
+            # 6.4 EMA smoothing
+            # --------------------------------------
+
+            smoothed_left, smoothed_right = (
+                lane_smoother.update(
+                    lane_info,
+                    temporal_accepted,
+                    temporal_reason,
+                )
+            )
+
+            # --------------------------------------
+            # 6.5 Draw final polygon
+            # --------------------------------------
+
+            if temporal_accepted:
+
+                annotated_frame = draw_smoothed_lane(
+                    frame,
+                    smoothed_left,
+                    smoothed_right,
+                )
+
+            else:
+
+                # Never display an unaccepted polygon.
                 annotated_frame = frame.copy()
 
             # --------------------------------------
-            # Extract raw lane coordinates
+            # 6.6 Extract raw coordinates
             # --------------------------------------
 
             left_bottom_x = None
@@ -210,8 +318,6 @@ try:
                 right_bottom_x = right_fit[0]
                 right_top_x = right_fit[2]
 
-            # Preserve raw fitted widths even when
-            # geometry or temporal filtering fails.
             if left_fit is not None and right_fit is not None:
 
                 bottom_width = (
@@ -223,7 +329,27 @@ try:
                 )
 
             # --------------------------------------
-            # Save CSV row
+            # 6.7 Extract smoothed coordinates
+            # --------------------------------------
+
+            smoothed_left_bottom_x = None
+            smoothed_right_bottom_x = None
+
+            smoothed_left_top_x = None
+            smoothed_right_top_x = None
+
+            if smoothed_left is not None:
+
+                smoothed_left_bottom_x = smoothed_left[0]
+                smoothed_left_top_x = smoothed_left[2]
+
+            if smoothed_right is not None:
+
+                smoothed_right_bottom_x = smoothed_right[0]
+                smoothed_right_top_x = smoothed_right[2]
+
+            # --------------------------------------
+            # 6.8 Write CSV row
             # --------------------------------------
 
             csv_writer.writerow([
@@ -240,49 +366,62 @@ try:
                 top_width,
                 temporal_accepted,
                 temporal_reason,
+                smoothed_left_bottom_x,
+                smoothed_right_bottom_x,
+                smoothed_left_top_x,
+                smoothed_right_top_x,
             ])
 
             # --------------------------------------
-            # Write output frame
+            # 6.9 Write annotated video frame
             # --------------------------------------
 
             writer.write(annotated_frame)
 
             # --------------------------------------
-            # Progress reporting
+            # 6.10 Print progress
             # --------------------------------------
 
             if frame_count % 100 == 0:
 
                 print(
                     f"Processed {frame_count} frames | "
-                    f"Geometry valid: {valid_lane_frames} | "
+                    f"Geometry valid: "
+                    f"{geometrically_valid_frames} | "
                     f"Temporal accepted: "
                     f"{temporally_accepted_frames}"
                 )
 
 finally:
-
-    # Release resources even if an error occurs.
     cap.release()
     writer.release()
 
 
 # --------------------------------------------------
-# 6. Performance statistics
+# 7. Geometric validation summary
 # --------------------------------------------------
 
 total_runtime = time.perf_counter() - start_total
 
-print("\n--- GEOMETRIC VALIDATION RESULTS ---")
+print("\n--- GEOMETRIC VALIDATION ---")
 
-print(f"Frames processed: {frame_count}")
-print(f"Geometrically valid frames: {valid_lane_frames}")
-print(f"Geometrically invalid frames: {invalid_lane_frames}")
+print(f"Total frames: {frame_count}")
+
+print(
+    f"Geometrically valid frames: "
+    f"{geometrically_valid_frames}"
+)
+
+print(
+    f"Geometrically invalid frames: "
+    f"{geometrically_invalid_frames}"
+)
 
 if frame_count > 0:
 
-    geometric_rate = valid_lane_frames / frame_count
+    geometric_rate = (
+        geometrically_valid_frames / frame_count
+    )
 
     print(
         f"Geometric validation rate: "
@@ -291,10 +430,10 @@ if frame_count > 0:
 
 
 # --------------------------------------------------
-# 7. Temporal filtering statistics
+# 8. Temporal filter summary
 # --------------------------------------------------
 
-print("\n--- TEMPORAL FILTER RESULTS ---")
+print("\n--- TEMPORAL FILTER ---")
 
 print(
     f"Temporally accepted frames: "
@@ -312,24 +451,19 @@ if frame_count > 0:
         temporally_accepted_frames / frame_count
     )
 
-    temporal_only_rejections = (
-        valid_lane_frames - temporally_accepted_frames
-    )
-
     print(
         f"Temporal acceptance rate: "
         f"{temporal_rate:.2%}"
     )
 
     print(
-        f"Geometrically valid frames rejected "
-        f"by temporal filter: "
-        f"{temporal_only_rejections}"
+        f"Geometrically valid but temporally rejected: "
+        f"{geometrically_valid_frames - temporally_accepted_frames}"
     )
 
 
 # --------------------------------------------------
-# 8. Processing performance
+# 9. Processing performance
 # --------------------------------------------------
 
 print("\n--- PERFORMANCE ---")
@@ -353,12 +487,12 @@ if frame_count > 0:
     )
 
     print(
-        f"Average lane processing time: "
+        f"Average lane detection time: "
         f"{avg_detection_time * 1000:.2f} ms/frame"
     )
 
     print(
-        f"Lane processing FPS: "
+        f"Lane detection FPS: "
         f"{detection_fps:.2f}"
     )
 
@@ -369,7 +503,7 @@ if frame_count > 0:
 
 
 # --------------------------------------------------
-# 9. Output locations
+# 10. Output files
 # --------------------------------------------------
 
 print("\n--- OUTPUT FILES ---")
