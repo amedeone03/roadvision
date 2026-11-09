@@ -6,6 +6,7 @@ import time
 import cv2
 
 from src.lanes.lane_detector import detect_lane
+from src.lanes.temporal_filter import TemporalLaneFilter
 
 
 # --------------------------------------------------
@@ -14,8 +15,12 @@ from src.lanes.lane_detector import detect_lane
 
 VIDEO_PATH = Path("data/videos/test_drive.mp4")
 
-OUTPUT_PATH = Path("runs/lane_output.mp4")
-CSV_PATH = Path("runs/lane_results.csv")
+OUTPUT_PATH = Path("runs/lane_temporal_output.mp4")
+CSV_PATH = Path("runs/lane_temporal_results.csv")
+
+# Experimental temporal filtering parameters
+MAX_JUMP = 100
+MAX_REFERENCE_AGE = 5
 
 OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -38,10 +43,12 @@ if fps <= 0 or width <= 0 or height <= 0:
     cap.release()
     raise RuntimeError("Invalid video metadata")
 
-print("\n--- ROADVISION LANE DETECTION ---")
+print("\n--- ROADVISION TEMPORAL LANE DETECTION ---")
 print(f"Input video: {VIDEO_PATH}")
 print(f"Resolution: {width}x{height}")
 print(f"Input FPS: {fps:.1f}")
+print(f"Maximum endpoint jump: {MAX_JUMP} px")
+print(f"Maximum reference age: {MAX_REFERENCE_AGE} frames")
 
 
 # --------------------------------------------------
@@ -57,17 +64,27 @@ writer = cv2.VideoWriter(
 
 if not writer.isOpened():
     cap.release()
-    raise RuntimeError("Could not create output video")
+    raise RuntimeError(
+        f"Could not create output video: {OUTPUT_PATH}"
+    )
 
 
 # --------------------------------------------------
-# 4. Initialize statistics
+# 4. Initialize temporal filter and statistics
 # --------------------------------------------------
+
+lane_filter = TemporalLaneFilter(
+    max_jump=MAX_JUMP,
+    max_reference_age=MAX_REFERENCE_AGE,
+)
 
 frame_count = 0
 
 valid_lane_frames = 0
 invalid_lane_frames = 0
+
+temporally_accepted_frames = 0
+temporally_rejected_frames = 0
 
 total_lane_processing_time = 0.0
 
@@ -75,7 +92,7 @@ start_total = time.perf_counter()
 
 
 # --------------------------------------------------
-# 5. Video processing and CSV logging
+# 5. Process video and log results
 # --------------------------------------------------
 
 try:
@@ -96,9 +113,15 @@ try:
             "right_top_x",
             "bottom_width",
             "top_width",
+            "temporal_accepted",
+            "temporal_reason",
         ])
 
         while True:
+
+            # --------------------------------------
+            # Read frame
+            # --------------------------------------
 
             success, frame = cap.read()
 
@@ -106,11 +129,14 @@ try:
                 break
 
             frame_count += 1
+
+            # CSV frame numbers are 1-based;
+            # timestamps start at zero.
             timestamp = (frame_count - 1) / fps
 
-            # ----------------------------------
+            # --------------------------------------
             # Run lane detection
-            # ----------------------------------
+            # --------------------------------------
 
             start_detection = time.perf_counter()
 
@@ -122,9 +148,9 @@ try:
 
             total_lane_processing_time += detection_time
 
-            # ----------------------------------
-            # Extract lane information
-            # ----------------------------------
+            # --------------------------------------
+            # Geometric validation statistics
+            # --------------------------------------
 
             valid = lane_info["valid"]
 
@@ -139,7 +165,34 @@ try:
             else:
                 invalid_lane_frames += 1
 
-            # Empty values indicate unavailable estimates
+            # --------------------------------------
+            # Temporal consistency filtering
+            # --------------------------------------
+
+            temporal_accepted, temporal_reason = (
+                lane_filter.update(
+                    frame_count,
+                    lane_info,
+                )
+            )
+
+            if temporal_accepted:
+                temporally_accepted_frames += 1
+            else:
+                temporally_rejected_frames += 1
+
+                # The lane detector may have drawn a
+                # geometrically valid polygon before
+                # temporal filtering rejected it.
+                #
+                # Return to the original frame so
+                # rejected polygons are not displayed.
+                annotated_frame = frame.copy()
+
+            # --------------------------------------
+            # Extract raw lane coordinates
+            # --------------------------------------
+
             left_bottom_x = None
             right_bottom_x = None
 
@@ -149,9 +202,6 @@ try:
             bottom_width = None
             top_width = None
 
-            # Extract each boundary independently.
-            # This also logs estimates in invalid frames
-            # when a boundary is available.
             if left_fit is not None:
                 left_bottom_x = left_fit[0]
                 left_top_x = left_fit[2]
@@ -160,9 +210,10 @@ try:
                 right_bottom_x = right_fit[0]
                 right_top_x = right_fit[2]
 
-            # Width is defined only when both
-            # boundary estimates are available.
+            # Preserve raw fitted widths even when
+            # geometry or temporal filtering fails.
             if left_fit is not None and right_fit is not None:
+
                 bottom_width = (
                     right_bottom_x - left_bottom_x
                 )
@@ -171,9 +222,9 @@ try:
                     right_top_x - left_top_x
                 )
 
-            # ----------------------------------
-            # Write CSV row
-            # ----------------------------------
+            # --------------------------------------
+            # Save CSV row
+            # --------------------------------------
 
             csv_writer.writerow([
                 frame_count,
@@ -187,53 +238,118 @@ try:
                 right_top_x,
                 bottom_width,
                 top_width,
+                temporal_accepted,
+                temporal_reason,
             ])
 
-            # ----------------------------------
-            # Write annotated video frame
-            # ----------------------------------
+            # --------------------------------------
+            # Write output frame
+            # --------------------------------------
 
             writer.write(annotated_frame)
 
-            # ----------------------------------
-            # Print progress
-            # ----------------------------------
+            # --------------------------------------
+            # Progress reporting
+            # --------------------------------------
 
             if frame_count % 100 == 0:
+
                 print(
                     f"Processed {frame_count} frames | "
-                    f"Valid: {valid_lane_frames} | "
-                    f"Invalid: {invalid_lane_frames}"
+                    f"Geometry valid: {valid_lane_frames} | "
+                    f"Temporal accepted: "
+                    f"{temporally_accepted_frames}"
                 )
 
 finally:
+
+    # Release resources even if an error occurs.
     cap.release()
     writer.release()
 
 
 # --------------------------------------------------
-# 6. Performance summary
+# 6. Performance statistics
 # --------------------------------------------------
 
 total_runtime = time.perf_counter() - start_total
 
-print("\n--- LANE DETECTION RESULTS ---")
+print("\n--- GEOMETRIC VALIDATION RESULTS ---")
 
 print(f"Frames processed: {frame_count}")
-print(f"Valid lane frames: {valid_lane_frames}")
-print(f"Invalid lane frames: {invalid_lane_frames}")
+print(f"Geometrically valid frames: {valid_lane_frames}")
+print(f"Geometrically invalid frames: {invalid_lane_frames}")
 
 if frame_count > 0:
 
-    validation_rate = valid_lane_frames / frame_count
+    geometric_rate = valid_lane_frames / frame_count
+
+    print(
+        f"Geometric validation rate: "
+        f"{geometric_rate:.2%}"
+    )
+
+
+# --------------------------------------------------
+# 7. Temporal filtering statistics
+# --------------------------------------------------
+
+print("\n--- TEMPORAL FILTER RESULTS ---")
+
+print(
+    f"Temporally accepted frames: "
+    f"{temporally_accepted_frames}"
+)
+
+print(
+    f"Temporally rejected frames: "
+    f"{temporally_rejected_frames}"
+)
+
+if frame_count > 0:
+
+    temporal_rate = (
+        temporally_accepted_frames / frame_count
+    )
+
+    temporal_only_rejections = (
+        valid_lane_frames - temporally_accepted_frames
+    )
+
+    print(
+        f"Temporal acceptance rate: "
+        f"{temporal_rate:.2%}"
+    )
+
+    print(
+        f"Geometrically valid frames rejected "
+        f"by temporal filter: "
+        f"{temporal_only_rejections}"
+    )
+
+
+# --------------------------------------------------
+# 8. Processing performance
+# --------------------------------------------------
+
+print("\n--- PERFORMANCE ---")
+
+if frame_count > 0:
 
     avg_detection_time = (
         total_lane_processing_time / frame_count
     )
 
-    print(
-        f"Lane validation rate: "
-        f"{validation_rate:.2%}"
+    detection_fps = (
+        1 / avg_detection_time
+        if avg_detection_time > 0
+        else 0
+    )
+
+    end_to_end_fps = (
+        frame_count / total_runtime
+        if total_runtime > 0
+        else 0
     )
 
     print(
@@ -241,19 +357,24 @@ if frame_count > 0:
         f"{avg_detection_time * 1000:.2f} ms/frame"
     )
 
-    if avg_detection_time > 0:
-        print(
-            f"Lane processing FPS: "
-            f"{1 / avg_detection_time:.2f}"
-        )
+    print(
+        f"Lane processing FPS: "
+        f"{detection_fps:.2f}"
+    )
 
-    if total_runtime > 0:
-        print(
-            f"End-to-end throughput: "
-            f"{frame_count / total_runtime:.2f} FPS"
-        )
+    print(
+        f"End-to-end throughput: "
+        f"{end_to_end_fps:.2f} FPS"
+    )
 
-print(f"\nOutput video: {OUTPUT_PATH}")
-print(f"Output CSV: {CSV_PATH}")
+
+# --------------------------------------------------
+# 9. Output locations
+# --------------------------------------------------
+
+print("\n--- OUTPUT FILES ---")
+
+print(f"Annotated video: {OUTPUT_PATH}")
+print(f"Results CSV: {CSV_PATH}")
 
 print("\nProcessing complete!")

@@ -67,32 +67,74 @@ def fit_lane_line(segments, y_bottom, y_top):
     )
 
 
-def validate_lane_polygon(left_fit, right_fit, image_width):
-    """Apply basic geometric checks to fitted boundaries."""
 
+def validate_lane_polygon(left_fit, right_fit, image_width):
+    """
+    Validate the estimated ego-lane geometry.
+
+    Width thresholds are experimental values
+    calibrated for the current 1920x1080 footage.
+    """
+
+    # Both lane boundaries must exist
     if left_fit is None or right_fit is None:
         return False
 
     lb_x, lb_y, lt_x, lt_y = left_fit
     rb_x, rb_y, rt_x, rt_y = right_fit
 
-    if lb_y != rb_y or lt_y != rt_y or lt_y >= lb_y:
+    # 1. Both boundaries must use the same
+    # vertical interval
+    if (
+        lb_y != rb_y
+        or lt_y != rt_y
+        or lt_y >= lb_y
+    ):
         return False
 
+    # 2. Calculate lane widths
     bottom_width = rb_x - lb_x
     top_width = rt_x - lt_x
 
-    if not (0 < bottom_width < image_width):
+    # 3. Left boundary must remain to the left
+    # of the right boundary
+    if bottom_width <= 0 or top_width <= 0:
         return False
 
-    if not (0 < top_width < image_width):
-        return False
-
-    # Reject fitted endpoints outside the image.
+    # 4. Endpoints must be inside the image
     if any(
         x < 0 or x >= image_width
         for x in (lb_x, lt_x, rb_x, rt_x)
     ):
+        return False
+
+    # 5. Width constraints, normalized to
+    # the image width (reference: 1920 px)
+    scale = image_width / 1920.0
+
+    MIN_BOTTOM_WIDTH = 650 * scale
+    MAX_BOTTOM_WIDTH = 1350 * scale
+
+    MIN_TOP_WIDTH = 0
+    MAX_TOP_WIDTH = 500 * scale
+
+    if not (
+        MIN_BOTTOM_WIDTH
+        <= bottom_width
+        <= MAX_BOTTOM_WIDTH
+    ):
+        return False
+
+    if not (
+        MIN_TOP_WIDTH
+        < top_width
+        <= MAX_TOP_WIDTH
+    ):
+        return False
+
+    # 6. Perspective consistency:
+    # the lane should appear wider at the bottom
+    if bottom_width <= top_width:
         return False
 
     return True
