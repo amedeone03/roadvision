@@ -135,9 +135,95 @@ masked_edges = cv2.bitwise_and(
     mask
 )
 
+# --------------------------------------------------
+# 10. Probabilistic Hough Line Transform
+# --------------------------------------------------
+
+lines = cv2.HoughLinesP(
+    masked_edges,
+    rho=1,
+    theta=np.pi / 180,
+    threshold=40,
+    minLineLength=40,
+    maxLineGap=30
+)
 
 # --------------------------------------------------
-# 10. Draw ROI on original frame
+# 11. Visualize Hough lines
+# --------------------------------------------------
+
+hough_visualization = frame.copy()
+
+line_count = 0
+
+if lines is not None:
+
+    for line in lines:
+        x1, y1, x2, y2 = line.reshape(4)
+
+        cv2.line(
+            hough_visualization,
+            (x1, y1),
+            (x2, y2),
+            color=(0, 255, 0),
+            thickness=4
+        )
+
+        line_count += 1
+
+print(f"Hough line segments detected: {line_count}")
+
+# --------------------------------------------------
+# 12. Filter Hough lines by slope
+# --------------------------------------------------
+
+filtered_visualization = frame.copy()
+
+left_lines = []
+right_lines = []
+
+MIN_ABS_SLOPE = 0.4
+MAX_ABS_SLOPE = 3.0
+
+if lines is not None:
+
+    for line in lines:
+
+        x1, y1, x2, y2 = line.reshape(4)
+
+        dx = x2 - x1
+        dy = y2 - y1
+
+        # Avoid division by zero
+        if dx == 0:
+            continue
+
+        slope = dy / dx
+
+        # Reject horizontal and near-vertical lines
+        if not (MIN_ABS_SLOPE <= abs(slope) <= MAX_ABS_SLOPE):
+            continue
+
+        if slope < 0:
+            left_lines.append((x1, y1, x2, y2))
+            color = (0, 255, 0)  # Green
+        else:
+            right_lines.append((x1, y1, x2, y2))
+            color = (255, 0, 0)  # Blue in BGR
+
+        cv2.line(
+            filtered_visualization,
+            (int(x1), int(y1)),
+            (int(x2), int(y2)),
+            color,
+            4
+        )
+
+print(f"Left candidate segments: {len(left_lines)}")
+print(f"Right candidate segments: {len(right_lines)}")
+
+# --------------------------------------------------
+# 13. Draw ROI on original frame
 # --------------------------------------------------
 
 roi_visualization = frame.copy()
@@ -152,7 +238,7 @@ cv2.polylines(
 
 
 # --------------------------------------------------
-# 11. Save all intermediate results
+# 14. Save all intermediate results
 # --------------------------------------------------
 
 images = {
@@ -163,6 +249,8 @@ images = {
     "roi_mask.png": mask,
     "masked_edges.png": masked_edges,
     "roi_visualization.png": roi_visualization,
+    "hough_lines.png": hough_visualization,
+    "filtered_lines.png": filtered_visualization,
 }
 
 for filename, image in images.items():
@@ -176,7 +264,7 @@ for filename, image in images.items():
 
 
 # --------------------------------------------------
-# 12. Print summary
+# 15. Print summary
 # --------------------------------------------------
 
 print("\n--- LANE PREPROCESSING COMPLETE ---")
