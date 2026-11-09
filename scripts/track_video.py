@@ -1,3 +1,4 @@
+
 from pathlib import Path
 import csv
 import time
@@ -7,23 +8,48 @@ import torch
 from ultralytics import YOLO
 
 
+# --------------------------------------------------
 # 1. Configuration
+# --------------------------------------------------
+
+# Input video
 VIDEO_PATH = Path("data/videos/test_drive.mp4")
-OUTPUT_PATH = Path("runs/tracking_buffer.mp4")
-CSV_PATH = Path("runs/tracking_buffer.csv")
 
+# Selected model and tracker
 MODEL_PATH = "yolo11n.pt"
-TRACKER = "configs/bytetrack_buffer.yaml"
+TRACKER = "configs/bytetrack_threshold.yaml"
 
+# Detection settings
 CONFIDENCE = 0.25
+
+# COCO classes:
+# 0 = person, 1 = bicycle, 2 = car,
+# 3 = motorcycle, 5 = bus, 7 = truck
 ROAD_USER_CLASSES = [0, 1, 2, 3, 5, 7]
 
+# Output files
+OUTPUT_PATH = Path("runs/tracking_selected.mp4")
+CSV_PATH = Path("runs/tracking_selected.csv")
 
-# 2. Load model
+# Hardware acceleration
+DEVICE = "mps"
+
+
+# --------------------------------------------------
+# 2. Load YOLO model
+# --------------------------------------------------
+
 model = YOLO(MODEL_PATH)
 
+print(f"Model: {MODEL_PATH}")
+print(f"Tracker: {TRACKER}")
+print(f"Device: {DEVICE}")
 
+
+# --------------------------------------------------
 # 3. Open input video
+# --------------------------------------------------
+
 cap = cv2.VideoCapture(str(VIDEO_PATH))
 
 if not cap.isOpened():
@@ -33,15 +59,26 @@ fps = cap.get(cv2.CAP_PROP_FPS)
 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-if fps <= 0:
+if fps <= 0 or width <= 0 or height <= 0:
     cap.release()
-    raise RuntimeError("Invalid video FPS")
+    raise RuntimeError("Invalid video metadata")
 
 print(f"Video: {width}x{height} at {fps:.1f} FPS")
 
 
+# --------------------------------------------------
 # 4. Prepare output files
-OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+# --------------------------------------------------
+
+OUTPUT_PATH.parent.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+CSV_PATH.parent.mkdir(
+    parents=True,
+    exist_ok=True
+)
 
 writer = cv2.VideoWriter(
     str(OUTPUT_PATH),
@@ -52,17 +89,29 @@ writer = cv2.VideoWriter(
 
 if not writer.isOpened():
     cap.release()
-    raise RuntimeError("Cannot create output video")
+    raise RuntimeError(
+        f"Cannot create output video: {OUTPUT_PATH}"
+    )
 
 
-# 5. Process frames
+# --------------------------------------------------
+# 5. Initialize tracking statistics
+# --------------------------------------------------
+
 frame_count = 0
 total_time = 0.0
-unique_ids = set()
 total_detections = 0
+
+unique_ids = set()
+
+
+# --------------------------------------------------
+# 6. Process video frame by frame
+# --------------------------------------------------
 
 try:
     with open(CSV_PATH, "w", newline="") as csv_file:
+
         csv_writer = csv.writer(csv_file)
 
         # CSV header
@@ -79,15 +128,24 @@ try:
         ])
 
         while True:
+
+            # Read next frame
             success, frame = cap.read()
 
             if not success:
                 break
 
             frame_count += 1
+
+            # Timestamp in seconds
             timestamp = (frame_count - 1) / fps
 
+            # Start processing timer
             start = time.perf_counter()
+
+            # ----------------------------------
+            # YOLO detection + ByteTrack
+            # ----------------------------------
 
             results = model.track(
                 frame,
@@ -95,30 +153,47 @@ try:
                 tracker=TRACKER,
                 conf=CONFIDENCE,
                 classes=ROAD_USER_CLASSES,
-                device="mps",
+                device=DEVICE,
                 verbose=False,
             )
 
             result = results[0]
 
-            # Extract tracking information
+            # ----------------------------------
+            # Extract tracked objects
+            # ----------------------------------
+
             if (
                 result.boxes is not None
                 and result.boxes.id is not None
             ):
+
                 boxes = result.boxes
 
-                track_ids = boxes.id.int().cpu().tolist()
-                class_ids = boxes.cls.int().cpu().tolist()
-                confidences = boxes.conf.cpu().tolist()
-                coordinates = boxes.xyxy.cpu().tolist()
+                track_ids = (
+                    boxes.id.int().cpu().tolist()
+                )
 
+                class_ids = (
+                    boxes.cls.int().cpu().tolist()
+                )
+
+                confidences = (
+                    boxes.conf.cpu().tolist()
+                )
+
+                coordinates = (
+                    boxes.xyxy.cpu().tolist()
+                )
+
+                # Save each tracked object to CSV
                 for track_id, class_id, conf, box in zip(
                     track_ids,
                     class_ids,
                     confidences,
                     coordinates,
                 ):
+
                     x1, y1, x2, y2 = box
 
                     class_name = model.names[class_id]
@@ -138,37 +213,75 @@ try:
                     unique_ids.add(track_id)
                     total_detections += 1
 
-            # Draw bounding boxes and IDs
+            # ----------------------------------
+            # Annotate frame
+            # ----------------------------------
+
             annotated = result.plot()
 
-            # Synchronize GPU timing
-            torch.mps.synchronize()
-            elapsed = time.perf_counter() - start
+            # Ensure GPU processing is finished
+            # before stopping the timer
+            if DEVICE == "mps":
+                torch.mps.synchronize()
 
+            elapsed = time.perf_counter() - start
             total_time += elapsed
 
+            # Write annotated frame
             writer.write(annotated)
 
+            # Print progress every 30 frames
             if frame_count % 30 == 0:
+
                 print(
                     f"Processed {frame_count} frames | "
                     f"Unique IDs: {len(unique_ids)}"
                 )
 
 finally:
+
+    # Always release video resources
     cap.release()
     writer.release()
 
 
-# 6. Print summary
+# --------------------------------------------------
+# 7. Final performance summary
+# --------------------------------------------------
+
 if frame_count > 0:
+
     avg_time = total_time / frame_count
 
-    print("\nTracking complete!")
+    processing_fps = 1 / avg_time
+
+    print("\n--- TRACKING COMPLETE ---")
+
     print(f"Frames processed: {frame_count}")
-    print(f"Total tracked detections: {total_detections}")
-    print(f"Unique track IDs: {len(unique_ids)}")
-    print(f"Average processing time: {avg_time * 1000:.1f} ms")
-    print(f"Processing FPS: {1 / avg_time:.1f}")
+
+    print(
+        f"Total tracked detections: "
+        f"{total_detections}"
+    )
+
+    print(
+        f"Unique track IDs: "
+        f"{len(unique_ids)}"
+    )
+
+    print(
+        f"Average processing time: "
+        f"{avg_time * 1000:.1f} ms"
+    )
+
+    print(
+        f"Processing FPS: "
+        f"{processing_fps:.1f}"
+    )
+
     print(f"Video saved to: {OUTPUT_PATH}")
     print(f"CSV saved to: {CSV_PATH}")
+
+else:
+
+    print("No frames were processed.")
