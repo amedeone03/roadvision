@@ -374,6 +374,30 @@ This supports faster-than-real-time offline processing for the tested recording.
 
 It does not establish live-camera latency, deployment readiness, or performance across other hardware and driving environments.
 
+
+### Phase 5 — Experimental Distance and Relative Motion
+
+RoadVision includes an experimental monocular motion pipeline:
+
+- Object-aware road vanishing-point estimation
+- Causal temporal stabilization
+- Approximate ground-plane distance estimation
+- Five-frame relative-motion regression
+- Geometric sensitivity screening
+- Annotated video and CSV export
+
+**Key results:** 1,728 frames processed, 68 tracked vehicles,
+1,419 valid experimental distance observations, and 603
+five-frame closing-speed estimates.
+
+Only 100 motion estimates satisfied the selected full-window
+sensitivity criterion.
+
+**Limitation:** Metric estimates use hypothetical camera calibration
+and are not validated physical measurements.
+
+See [Phase 5 documentation](docs/phase5_motion_estimation.md).
+
 ---
 
 ## Running RoadVision

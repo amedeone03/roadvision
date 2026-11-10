@@ -5,50 +5,48 @@ from src.association.vehicle_lane import (
 )
 
 
-left_fit = (517, 972, 779, 734)
-right_fit = (1540, 972, 1059, 734)
+def test_detailed_vehicle_lane_association():
 
-polygon = build_lane_polygon(
-    left_fit,
-    right_fit,
-)
+    left_fit = (517, 972, 779, 734)
+    right_fit = (1540, 972, 1059, 734)
 
-test_cases = [
-    (
-        "Inside ego lane",
-        (900, 700, 1100, 850),
-        ("IN_LANE", "inside_polygon"),
-    ),
-    (
-        "Outside ego lane",
-        (200, 700, 400, 850),
-        ("OUT_LANE", "outside_polygon"),
-    ),
-    (
-        "Distant vehicle",
-        (700, 500, 820, 630),
-        ("UNKNOWN", "above_lane_coverage"),
-    ),
-]
-
-for name, bbox, expected in test_cases:
-
-    result = classify_vehicle_lane_detailed(
-        bbox,
-        polygon,
+    polygon = build_lane_polygon(
+        left_fit,
+        right_fit,
     )
 
-    print(f"{name}: {result}")
+    test_cases = [
+        (
+            "Inside ego lane",
+            (900, 700, 1100, 850),
+            ("IN_LANE", "inside_polygon"),
+        ),
+        (
+            "Outside ego lane",
+            (200, 700, 400, 850),
+            ("OUT_LANE", "outside_polygon"),
+        ),
+        (
+            "Distant vehicle",
+            (700, 500, 820, 630),
+            ("UNKNOWN", "above_lane_coverage"),
+        ),
+    ]
 
-    assert result == expected
+    for name, bbox, expected in test_cases:
 
+        result = classify_vehicle_lane_detailed(
+            bbox,
+            polygon,
+        )
 
-# Test unavailable lane polygon.
-result = classify_vehicle_lane_detailed(
-    (900, 700, 1100, 850),
-    None,
-)
+        print(f"{name}: {result}")
 
-assert result == ("UNKNOWN", "lane_unavailable")
+        assert result == expected
 
-print("\nAll detailed association tests passed!")
+    result = classify_vehicle_lane_detailed(
+        (900, 700, 1100, 850),
+        None,
+    )
+
+    assert result == ("UNKNOWN", "lane_unavailable")
