@@ -171,8 +171,8 @@ def detect_lane(frame):
 
     vertices = np.array([[
         (int(0.20 * width), height - 1),
-        (int(0.38 * width), int(0.48 * height)),
-        (int(0.62 * width), int(0.48 * height)),
+        (int(0.43 * width), int(0.52 * height)),
+        (int(0.58 * width), int(0.52 * height)),
         (int(0.95 * width), height - 1),
     ]], dtype=np.int32)
 
@@ -234,7 +234,7 @@ def detect_lane(frame):
     # -------------------------------------
 
     y_bottom = int(0.90 * height)
-    y_top = int(0.55 * height)
+    y_top = int(0.68 * height)
 
     left_fit = fit_lane_line(
         left_lines, y_bottom, y_top

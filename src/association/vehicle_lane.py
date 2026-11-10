@@ -160,3 +160,53 @@ def build_extended_lane_polygon(
     )
 
     return polygon
+
+
+def classify_vehicle_lane_detailed(bbox, lane_polygon):
+    """
+    Classify a vehicle relative to the ego lane.
+
+    Returns:
+        status:
+            IN_LANE
+            OUT_LANE
+            UNKNOWN
+
+        reason:
+            inside_polygon
+            outside_polygon
+            lane_unavailable
+            above_lane_coverage
+            below_lane_coverage
+    """
+
+    # No valid ego-lane polygon is available.
+    if lane_polygon is None:
+        return "UNKNOWN", "lane_unavailable"
+
+    # Approximate the vehicle's road-contact point.
+    x_center, y_bottom = get_bottom_center(bbox)
+
+    # Determine the supported vertical interval.
+    y_min = float(lane_polygon[:, 1].min())
+    y_max = float(lane_polygon[:, 1].max())
+
+    # Vehicle is farther away than our lane model covers.
+    if y_bottom < y_min:
+        return "UNKNOWN", "above_lane_coverage"
+
+    # Vehicle contact point is below the lane model.
+    if y_bottom > y_max:
+        return "UNKNOWN", "below_lane_coverage"
+
+    # Test whether the point lies inside the polygon.
+    result = cv2.pointPolygonTest(
+        lane_polygon,
+        (float(x_center), float(y_bottom)),
+        False,
+    )
+
+    if result >= 0:
+        return "IN_LANE", "inside_polygon"
+
+    return "OUT_LANE", "outside_polygon"
