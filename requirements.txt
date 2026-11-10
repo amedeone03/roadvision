@@ -45,3 +45,4 @@ ultralytics==8.4.193
 ultralytics-platform==0.1.101
 ultralytics-thop==2.2.3
 urllib3==2.8.0
+scikit-learn==1.9.1
