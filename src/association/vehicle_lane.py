@@ -210,3 +210,120 @@ def classify_vehicle_lane_detailed(bbox, lane_polygon):
         return "IN_LANE", "inside_polygon"
 
     return "OUT_LANE", "outside_polygon"
+
+
+
+def lane_x_at_y(fit, y):
+    """
+    Interpolate the X coordinate of a lane boundary
+    at image height y.
+
+    fit: (x_bottom, y_bottom, x_top, y_top)
+
+    Returns None outside the fitted vertical interval.
+    """
+
+    if fit is None:
+        return None
+
+    x_bottom, y_bottom, x_top, y_top = fit
+
+    if y_bottom == y_top:
+        return None
+
+    if not min(y_bottom, y_top) <= y <= max(
+        y_bottom, y_top
+    ):
+        return None
+
+    fraction = (y - y_top) / (y_bottom - y_top)
+
+    return float(
+        x_top + fraction * (x_bottom - x_top)
+    )
+
+
+def classify_vehicle_lane_conservative(
+    bbox,
+    left_fit,
+    right_fit,
+    margin=0.05,
+):
+    """
+    Classify a tracked road user relative to
+    the estimated ego lane.
+
+    A margin of 0.05 reserves 5% of the estimated
+    lane width near each boundary as uncertain.
+
+    Returns:
+        (status, reason, normalized_margin)
+
+    A positive normalized margin means the contact
+    point is inside the lateral lane boundaries.
+
+    None indicates unavailable geometry or
+    unsupported vertical coverage.
+    """
+
+    if not 0 <= margin < 0.5:
+        raise ValueError(
+            "margin must be between 0 and 0.5"
+        )
+
+    if left_fit is None or right_fit is None:
+        return "UNKNOWN", "lane_unavailable", None
+
+    x_center, y_bottom = get_bottom_center(bbox)
+
+    # Check the common vertical coverage of both fits.
+    y_min = max(left_fit[3], right_fit[3])
+    y_max = min(left_fit[1], right_fit[1])
+
+    if y_bottom < y_min:
+        return "UNKNOWN", "above_lane_coverage", None
+
+    if y_bottom > y_max:
+        return "UNKNOWN", "below_lane_coverage", None
+
+    x_left = lane_x_at_y(left_fit, y_bottom)
+    x_right = lane_x_at_y(right_fit, y_bottom)
+
+    if x_left is None or x_right is None:
+        return "UNKNOWN", "invalid_lane_geometry", None
+
+    lane_width = x_right - x_left
+
+    if lane_width <= 0:
+        return "UNKNOWN", "invalid_lane_geometry", None
+
+    # Distances to the estimated lateral boundaries.
+    d_left = x_center - x_left
+    d_right = x_right - x_center
+
+    normalized_margin = (
+        min(d_left, d_right) / lane_width
+    )
+
+    # Clearly outside the lane.
+    if d_left < 0 or d_right < 0:
+        return (
+            "OUT_LANE",
+            "outside_lateral_boundaries",
+            normalized_margin,
+        )
+
+    # Inside, but close to a boundary.
+    if normalized_margin < margin:
+        return (
+            "UNKNOWN",
+            "near_lane_boundary",
+            normalized_margin,
+        )
+
+    return (
+        "IN_LANE",
+        "inside_lateral_boundaries",
+        normalized_margin,
+    )
+
