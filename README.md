@@ -398,6 +398,31 @@ and are not validated physical measurements.
 
 See [Phase 5 documentation](docs/phase5_motion_estimation.md).
 
+
+### Phase 6 — Lane-Aware Approach Evidence
+
+RoadVision includes an experimental approach-evidence
+pipeline combining:
+
+- Robust bounding-box scale-growth classification
+- Inverse-expansion time-to-contact proxy
+- Lane-aware approach classification
+- Causal temporal event stabilization
+- Annotated video and structured CSV export
+
+**Results:** On 1,728 video frames, the pipeline
+identified 1,066 apparent approach observations and
+8 stabilized ego-lane approach episodes across 4 tracks.
+
+All 39 automated tests passed, and the Phase 6
+integration validator completed successfully.
+
+**Limitation:** Detected episodes are not validated
+collision threats. The inverse-expansion proxy must
+not be interpreted as safety-certified TTC.
+
+See [Phase 6 documentation](docs/phase6_risk_assessment.md).
+
 ---
 
 ## Running RoadVision
