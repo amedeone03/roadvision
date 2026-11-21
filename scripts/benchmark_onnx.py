@@ -341,41 +341,110 @@ def time_call_sequence(
     *,
     call: str,
     engine: str,
+    providers: list | None = None,
 ) -> tuple[list[dict[str, object]], float]:
-    """Time one fresh model. Frame 1 remains the warm-up row."""
+    """Time one fresh model. Frame 1 remains the warm-up row.
 
-    from ultralytics import YOLO
+    ``providers`` replaces the ONNX Runtime session providers for this
+    model only. PyTorch runs leave it unset.
+    """
 
     started = time.perf_counter_ns()
-    model = YOLO(str(model_path))
-    load_ms = (time.perf_counter_ns() - started) / 1_000_000
-    device = str(kwargs["device"])
-    method = model.predict if call == "predict" else model.track
-    rows = []
-    for number, frame in enumerate(frames, start=1):
-        synchronize(device)
-        call_started = time.perf_counter_ns()
-        results = method(frame, **kwargs)
-        synchronize(device)
-        elapsed_ms = (time.perf_counter_ns() - call_started) / 1_000_000
-        result = results[0]
-        speed = dict(getattr(result, "speed", {}) or {})
-        boxes = boxes_from_result(result, include_track_id=call == "track")
-        rows.append(
-            {
-                "engine": engine,
-                "call": call,
-                "frame": number,
-                "warmup": number <= WARMUP_FRAMES,
-                "elapsed_ms": elapsed_ms,
-                "ultralytics_preprocess_ms": _optional_float(speed.get("preprocess")),
-                "ultralytics_inference_ms": _optional_float(speed.get("inference")),
-                "ultralytics_postprocess_ms": _optional_float(speed.get("postprocess")),
-                "detections": len(boxes),
-                "boxes": boxes,
-            }
-        )
+    with _provider_override(providers):
+        model = _load_yolo(model_path)
+        load_ms = (time.perf_counter_ns() - started) / 1_000_000
+        device = str(kwargs["device"])
+        method = model.predict if call == "predict" else model.track
+        rows = []
+        session_providers: list[str] | None = None
+        for number, frame in enumerate(frames, start=1):
+            synchronize(device)
+            call_started = time.perf_counter_ns()
+            results = method(frame, **kwargs)
+            synchronize(device)
+            elapsed_ms = (time.perf_counter_ns() - call_started) / 1_000_000
+            if session_providers is None:
+                session_providers = _session_providers(model)
+                _require_provider(session_providers, providers)
+            result = results[0]
+            speed = dict(getattr(result, "speed", {}) or {})
+            boxes = boxes_from_result(result, include_track_id=call == "track")
+            rows.append(
+                {
+                    "engine": engine,
+                    "call": call,
+                    "frame": number,
+                    "warmup": number <= WARMUP_FRAMES,
+                    "elapsed_ms": elapsed_ms,
+                    "ultralytics_preprocess_ms": _optional_float(speed.get("preprocess")),
+                    "ultralytics_inference_ms": _optional_float(speed.get("inference")),
+                    "ultralytics_postprocess_ms": _optional_float(speed.get("postprocess")),
+                    "detections": len(boxes),
+                    "boxes": boxes,
+                    "session_providers": session_providers,
+                }
+            )
     return rows, load_ms
+
+
+def _load_yolo(model_path: Path):
+    from ultralytics import YOLO
+
+    return YOLO(str(model_path))
+
+
+class _provider_override:
+    """Force ONNX Runtime providers until the timed model has finished."""
+
+    def __init__(self, providers: list | None) -> None:
+        self.providers = list(providers) if providers else None
+        self.original = None
+
+    def __enter__(self):
+        if not self.providers:
+            return self
+        import onnxruntime
+
+        self.original = onnxruntime.InferenceSession
+        forced = self.providers
+
+        def session(model, sess_options=None, providers=None, *args, **kwargs):
+            return self.original(model, sess_options, providers=forced, *args, **kwargs)
+
+        onnxruntime.InferenceSession = session
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        if self.original is None:
+            return
+        import onnxruntime
+
+        onnxruntime.InferenceSession = self.original
+
+
+def _require_provider(active: list[str], providers: list | None) -> None:
+    if not providers:
+        return
+    expected = providers[0][0] if isinstance(providers[0], tuple) else providers[0]
+    if not active or active[0] != expected:
+        raise RuntimeError(
+            f"ONNX session providers are {active}, expected {expected} first."
+        )
+
+
+def _session_providers(model: object) -> list[str]:
+    candidates = []
+    predictor = getattr(model, "predictor", None)
+    if predictor is not None:
+        candidates.append(getattr(predictor, "model", None))
+    candidates.append(getattr(model, "model", None))
+    for backend in candidates:
+        session = getattr(backend, "session", None)
+        if session is None:
+            session = getattr(getattr(backend, "model", None), "session", None)
+        if session is not None:
+            return list(session.get_providers())
+    return []
 
 
 def boxes_from_result(result: object, *, include_track_id: bool) -> list[dict]:
