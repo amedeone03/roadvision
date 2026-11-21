@@ -98,11 +98,14 @@ Vehicles outside the usable lane-geometry region remain `UNKNOWN` instead of bei
 
 | Path | Contents |
 |---|---|
-| `roadvision/` | Unified application and CLI |
-| `src/` | Perception and motion algorithms |
-| `scripts/` | Experiments and evaluation |
+| `roadvision/` | Current application and CLI |
+| `src/` | Reusable perception and motion algorithms |
+| `scripts/` | Reproducible experiments and evaluation |
+| `scripts/legacy/` | Superseded historical experiments, kept for reference |
 | `tests/` | Automated validation |
 | `docs/` | Technical notes |
+
+`python -m roadvision` is the application. The Phase 5–8 reproduction scripts stay in `scripts/`. The archived experiments are not part of that command. See [scripts/legacy/README.md](scripts/legacy/README.md).
 
 - [Phase 7 evaluation](docs/phase7_evaluation.md) — detection, lane, tracking, and episode audit.
 - [Phase 8 integration](docs/phase8_integration.md) — pipeline, full-video regression, and the one approach-label difference.
