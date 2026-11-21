@@ -1,0 +1,75 @@
+# RoadVision application defaults.
+# Origins for each value live on the dataclass fields in
+# roadvision/config.py. Lane-detector values are locked to
+# src/lanes/lane_detector.py and cannot be overridden.
+
+video:
+  input_path: data/videos/test_drive.mp4
+  output_dir: runs/final
+  max_frames: null
+
+detector:
+  model_path: yolo11n.pt
+  device: mps
+  confidence: 0.25
+  classes: [0, 1, 2, 3, 5, 7]
+
+tracker:
+  # Thresholds stay in this ByteTrack file:
+  # new_track_thresh 0.40, track_buffer 30.
+  config_path: configs/bytetrack_threshold.yaml
+
+lane_filter:
+  max_jump: 100
+  max_reference_age: 5
+  max_candidate_gap: 2
+
+lane_smoother:
+  alpha: 0.3
+
+association:
+  lateral_margin: 0.05
+
+motion:
+  robust_window: 5
+
+approach:
+  growth_threshold: 0.15
+
+time_to_contact:
+  min_growth: 0.15
+
+stabilizer:
+  min_confirmations: 3
+  max_gap: 2
+
+output:
+  annotated_video: annotated.mp4
+  observations_csv: observations.csv
+  events_csv: events.csv
+  metadata_json: metadata.json
+
+lane_detector:
+  blur_kernel: [5, 5]
+  blur_sigma: 0
+  canny_low: 50
+  canny_high: 150
+  min_abs_slope: 0.40
+  max_abs_slope: 3.0
+  hough_rho: 1
+  hough_theta_deg: 1
+  hough_threshold: 40
+  min_line_length: 40
+  max_line_gap: 30
+  roi_bottom_left_x: 0.20
+  roi_top_left_x: 0.43
+  roi_top_y: 0.52
+  roi_top_right_x: 0.58
+  roi_bottom_right_x: 0.95
+  fit_y_bottom: 0.90
+  fit_y_top: 0.68
+  reference_width_px: 1920
+  min_bottom_width_px: 650
+  max_bottom_width_px: 1350
+  min_top_width_px: 0
+  max_top_width_px: 500

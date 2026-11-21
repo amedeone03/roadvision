@@ -1,584 +1,226 @@
-
 # RoadVision
 
-**Real-Time ADAS Perception System**
+RoadVision is an experimental driving-perception prototype. From one forward-facing dashcam video it detects road users, tracks them, estimates the ego lane, and records image-space approach evidence.
 
-RoadVision is a computer vision project focused on developing an automotive perception pipeline using forward-facing dashcam footage.
+The evidence is a research indicator. It is not a calibrated collision risk, a validated physical time to collision, or a safety-certified driver-assistance function. Do not use it to control a vehicle.
 
-The system combines deep-learning-based object detection, multi-object tracking, classical lane detection, and geometric reasoning to identify surrounding road users and estimate their position relative to the ego vehicle's driving lane.
+The current application is one command. It does not need the intermediate CSV files produced by the earlier experiments.
 
-The long-term goal is to extend this perception pipeline with distance estimation, relative-motion analysis, time-to-collision (TTC) estimation, and collision-risk assessment.
+## Architecture
 
-> **Project status:** Phases 0–4 completed. Distance estimation, relative-motion estimation, and collision-risk assessment are planned.
->
-> RoadVision is an experimental research prototype and is not designed or validated for safety-critical driving applications.
-
----
-
-## Project Objectives
-
-1. Detect vehicles, pedestrians, cyclists, and other relevant road users.
-2. Track detected objects across consecutive video frames.
-3. Detect lane boundaries and estimate the ego vehicle's driving lane.
-4. Associate tracked road users with the estimated ego lane.
-5. Estimate distances to surrounding vehicles.
-6. Estimate relative motion between the ego vehicle and tracked objects.
-7. Calculate time-to-collision (TTC).
-8. Visualize potential collision risks.
-
-Objectives 1–4 have been implemented for the current prototype.
-
----
-
-## Technology Stack
-
-| Technology | Purpose |
-|---|---|
-| Python | Pipeline implementation |
-| PyTorch | Deep-learning inference |
-| Ultralytics YOLO11n | Object detection |
-| ByteTrack | Multi-object tracking |
-| OpenCV | Video processing, lane detection, geometric operations, and visualization |
-| NumPy | Numerical computations |
-| pandas | Tracking and perception-data analysis |
-| Git / GitHub | Version control and experiment management |
-
-The project uses PyTorch's Metal Performance Shaders (MPS) backend for GPU-accelerated inference on Apple Silicon.
-
----
-
-## System Architecture
-
-The integrated pipeline processes each video frame through two complementary perception branches.
+Each video run creates new detection, lane, and motion state. Nothing is carried over from a previous video.
 
 ```text
-                    Dashcam Video
-                         |
-                     Video Frame
-                         |
-             +-----------+-----------+
-             |                       |
-             v                       v
-        YOLO11n Detection      Lane Detection
-             |                 (OpenCV + Hough)
-             v                       |
-        ByteTrack Tracking           v
-             |                 Geometric Validation
-             |                       |
-             |                       v
-             |                 Temporal Filtering
-             |                       |
-             |                       v
-             |                 EMA Lane Smoothing
-             |                       |
-             +-----------+-----------+
-                         |
-                         v
-              Vehicle-to-Lane Association
-                         |
-                         v
-                IN_LANE / OUT_LANE
-                     / UNKNOWN
-                         |
-              +----------+----------+
-              |                     |
-              v                     v
-         Annotated Video        CSV Results
+MP4
+ |
+ |-- lane detector, temporal filter, and smoother on every frame
+ |
+ |-- YOLO11n and ByteTrack on the original frame
+ |
+ |-- conservative vehicle-to-lane association
+ |
+ |-- per-track causal motion and approach evidence
+ |
+ |-- annotated frame, observation row, and, at the end, episodes
 ```
 
-The two perception branches operate on the same video frames.
+Lane perception is classical: blur, Canny edges, a road region of interest, Hough lines, slope filtering, and a validated lane polygon. A temporal filter rejects abrupt jumps. An exponential moving average then smooths accepted fits. The lane state is updated even when a frame has no tracked objects.
 
-Object tracking maintains persistent identities across frames, while temporal lane filtering and smoothing reduce instability in estimated lane geometry.
+Detection uses pretrained YOLO11n. The retained classes are person, bicycle, car, motorcycle, bus, and truck (COCO 0, 1, 2, 3, 5, and 7). ByteTrack assigns IDs. The selected tracker file is `configs/bytetrack_threshold.yaml`.
 
----
+Association compares the bottom-center of each box with the smoothed lane. `IN_LANE` and `OUT_LANE` are definite. `UNKNOWN` stays explicit when the lane is unavailable, the contact point is outside the fitted vertical range, or it lies within 5% of either boundary.
 
-## Current Implementation
+Approach evidence is computed online for each track:
 
-### Phase 1 — Object Detection
+1. Bounding-box height and time, using the measured frame rate.
+2. A causal five-frame robust slope of log height. A missing frame clears the window.
+3. `APPROACHING`, `STABLE`, `RECEDING`, or `UNKNOWN` around ±0.15/s.
+4. An inverse-expansion proxy, `tau_proxy_s = 1 / growth`, only while growth is above 0.15/s.
+5. Lane-aware evidence, then a stabilizer with three confirmations and a gap of at most two frames.
 
-Implemented road-user detection using a pretrained YOLO11n model.
+`CONFIRMED` means the stabilizer accepted an image-space pattern. `HELD` means an accepted pattern is being retained during a short interruption. Neither state is a collision warning.
 
-The detector processes forward-facing driving footage and identifies relevant COCO classes:
+Monocular distance and vanishing-point experiments remain in `scripts/`. They use a hypothetical camera and are not inputs to approach classification, so the application does not run them. The design is recorded in [Phase 8 integration](docs/phase8_integration.md).
 
-- Person
-- Bicycle
-- Car
-- Motorcycle
-- Bus
-- Truck
+## Installation
 
-Detected objects are visualized using bounding boxes and confidence scores.
-
-#### Initial Detection Benchmark
-
-| Metric | Result |
-|---|---:|
-| Video resolution | 1920 × 1080 |
-| Input frame rate | 29.97 FPS |
-| Total frames | 1,728 |
-| Detection processing throughput | ~75.5 FPS |
-| Inference device | Apple Silicon GPU (MPS) |
-
-The initial benchmark covers model prediction and visualization, excluding video decoding and output writing.
-
-It is not a full end-to-end latency measurement.
-
----
-
-### Phase 2 — Multi-Object Tracking
-
-Integrated ByteTrack to associate detections across consecutive frames and assign persistent tracking IDs.
-
-Tracking observations are exported to CSV for quantitative analysis.
-
-#### Selected Tracking Configuration
-
-Following a four-configuration experiment, the threshold-tuned ByteTrack configuration was selected as the tracking baseline.
-
-| Parameter | Value |
-|---|---|
-| Detector | YOLO11n |
-| Tracker | ByteTrack |
-| Detection confidence | 0.25 |
-| New-track threshold | 0.40 |
-| Track buffer | 30 frames |
-
-Configuration file:
-
-`configs/bytetrack_threshold.yaml`
-
-#### Tracking Experiments
-
-Compared with the default ByteTrack configuration:
-
-- Short-lived tracks decreased by **46.4%** (28 → 15).
-- Unique track IDs decreased by **23.6%** (89 → 68).
-- Mean track span increased from **1.22 to 1.47 seconds**.
-- Tracked observations decreased by **5.1%**.
-- Frame coverage decreased slightly from **80.32% to 79.75%**.
-
-The experiments indicated that changing the new-track threshold accounted for the observed differences in these metrics.
-
-Increasing the track buffer from 30 to 45 frames produced no additional measurable improvement in the evaluated recording.
-
-These measurements are tracking-behavior proxies, not ground-truth tracking accuracy metrics.
-
-**Selected configuration results:**
-
-| Metric | Result |
-|---|---:|
-| Unique tracking IDs | 68 |
-| Tracked observations | 2,656 |
-| Short-lived tracks | 15 |
-
-For the detailed comparison and limitations, see [Multi-Object Tracking Experiments](docs/tracking_experiments.md).
-
----
-
-### Phase 3 — Ego-Lane Perception
-
-Implemented a classical computer vision pipeline for detecting the ego vehicle's lane boundaries.
-
-The lane detector applies:
-
-1. Grayscale conversion and Gaussian smoothing.
-2. Canny edge detection.
-3. Trapezoidal region-of-interest masking.
-4. Probabilistic Hough line detection.
-5. Segment filtering based on slope and image position.
-6. Length-weighted linear fitting of left and right lane boundaries.
-7. Geometric validation of the resulting lane polygon.
-
-#### Geometric Validation
-
-Candidate lane boundaries are checked for geometric plausibility, including:
-
-- Correct left/right ordering.
-- Valid image coordinates.
-- Plausible lane widths.
-- Non-crossing lane boundaries.
-
-The fitted lane model is restricted to a near-field image region.
-
-Lane estimates are rejected when their geometry does not satisfy the validation constraints.
-
-#### Temporal Stabilization
-
-Two additional components improve stability.
-
-**TemporalLaneFilter**
-
-Rejects abrupt changes in fitted lane coordinates and requires confirmation before accepting a new lane reference after prolonged instability.
-
-**LaneSmoother**
-
-Applies exponential moving average (EMA) smoothing to the accepted lane coordinates.
-
-The selected smoothing parameter is:
-
-`alpha = 0.3`
-
-The temporal filter and EMA operate on lane geometry, not on vehicle detections.
-
-#### Lane Perception Results
-
-| Metric | Result |
-|---|---:|
-| Video frames | 1,728 |
-| Temporally accepted frames | 1,111 |
-| Lane availability | 64.29% |
-| Longest unavailable interval | 38 frames |
-
-The final temporal pipeline substantially reduced frame-to-frame variation in accepted lane coordinates.
-
-However, the lane detector remains sensitive to dashed markings, occlusions, perspective, and nearby vehicles.
-
-No ground-truth lane-segmentation dataset has been used to establish geometric detection accuracy.
-
----
-
-### Phase 4 — Vehicle-to-Lane Association
-
-Integrated object detection, tracking, and lane perception into a single video-processing pipeline.
-
-For each tracked object, the system estimates its road-contact position using the bottom-center of its bounding box:
-
-```python
-contact_x = (x1 + x2) / 2
-contact_y = y2
-```
-
-The contact point is compared against the estimated ego-lane geometry.
-
-#### Association States
-
-| Status | Interpretation |
-|---|---|
-| `IN_LANE` | Contact point is sufficiently inside the estimated ego lane |
-| `OUT_LANE` | Contact point lies outside the estimated lateral lane boundaries |
-| `UNKNOWN` | Available information is insufficient for a definite classification |
-
-`UNKNOWN` can occur when:
-
-- Lane geometry is unavailable.
-- The contact point is above the supported lane region.
-- The contact point is below the supported lane region.
-- The contact point is too close to an estimated lane boundary.
-
-This explicit uncertainty handling avoids forcing a lane classification when the geometric evidence is insufficient.
-
-#### Conservative Lateral Association
-
-The initial implementation used point-in-polygon testing.
-
-Visual inspection revealed occasional incorrect `IN_LANE` classifications for large trucks traveling in adjacent lanes.
-
-Further analysis showed that these errors were sensitive to bounding-box bottom-center coordinates and estimated lane boundaries.
-
-The final implementation evaluates horizontal distances to the left and right lane boundaries at the vehicle's contact-point height.
-
-A **5% normalized lateral uncertainty margin** is applied.
-
-A vehicle inside the estimated lane but within 5% of either boundary is classified as `UNKNOWN`.
-
-The 5% threshold is an experimentally selected heuristic, not a calibrated probability or automotive safety standard.
-
-#### Association Experiments
-
-Two approaches were evaluated:
-
-**1. Contact-point smoothing**
-
-Compared raw contact points against EMA smoothing with alpha values of 0.3 and 0.6.
-
-Temporal smoothing did not consistently reduce false `IN_LANE` classifications in the inspected truck sequences and was therefore not adopted.
-
-**2. Lateral uncertainty margins**
-
-Compared 0%, 5%, and 10% normalized lateral margins.
-
-The 5% margin offered a useful tradeoff between rejecting ambiguous truck observations and retaining classifications for a reference vehicle ahead.
-
-#### Experimental Comparison
-
-| Metric | Baseline | Final 5% margin |
-|---|---:|---:|
-| IN_LANE observations | 308 | 301 |
-| OUT_LANE observations | 571 | 571 |
-| UNKNOWN observations | 1,777 | 1,784 |
-| Direct IN/OUT classification flips | 7 | 3 |
-| False IN_LANE in inspected truck sequences | 12 | 6 |
-
-The final method:
-
-- Reduced direct lane-classification flips by **57.1%**.
-- Reduced false `IN_LANE` observations by **50%** in two manually inspected adjacent-lane truck sequences.
-- Changed seven classifications from `IN_LANE` to `UNKNOWN`.
-
-These improvements are measured on the evaluated recording and selected diagnostic examples.
-
-They do not establish general lane-association accuracy.
-
-#### Manual Visual Validation
-
-A separate set of 24 observations was selected for visual review.
-
-Both the baseline and conservative methods agreed with all 24 visual labels.
-
-However:
-
-- Both methods produced identical predictions on this sample.
-- Some vehicles appeared in multiple sampled frames.
-- The sample was selected using predicted classifications.
-- The evaluation did not cover a representative range of driving conditions.
-
-Therefore, the result should not be interpreted as 100% generalization accuracy or as independent proof that the 5% method is superior.
-
-For detailed experiments and limitations, see [Vehicle-to-Lane Association Experiments](docs/association_experiments.md).
-
----
-
-## Integrated Pipeline Performance
-
-The final integrated system combines:
-
-- YOLO11n object detection.
-- Threshold-tuned ByteTrack.
-- Classical lane perception.
-- Temporal lane validation.
-- EMA lane smoothing.
-- Conservative vehicle-to-lane association.
-- Annotated video generation and CSV logging.
-
-### Final Benchmark
-
-| Metric | Result |
-|---|---:|
-| Input resolution | 1920 × 1080 |
-| Input frame rate | 29.97 FPS |
-| Processed frames | 1,728 |
-| Unique track IDs | 68 |
-| Tracked observations | 2,656 |
-| Accepted lane frames | 1,111 |
-| Lane availability | 64.29% |
-| IN_LANE observations | 301 |
-| OUT_LANE observations | 571 |
-| UNKNOWN observations | 1,784 |
-| End-to-end processing throughput | **39.30 FPS** |
-
-The integrated pipeline processes the recording at approximately **1.31× its input frame rate** on the development machine.
-
-The reported throughput includes video decoding, object detection, tracking, lane estimation, association, visualization, and output writing.
-
-This supports faster-than-real-time offline processing for the tested recording.
-
-It does not establish live-camera latency, deployment readiness, or performance across other hardware and driving environments.
-
-
-### Phase 5 — Experimental Distance and Relative Motion
-
-RoadVision includes an experimental monocular motion pipeline:
-
-- Object-aware road vanishing-point estimation
-- Causal temporal stabilization
-- Approximate ground-plane distance estimation
-- Five-frame relative-motion regression
-- Geometric sensitivity screening
-- Annotated video and CSV export
-
-**Key results:** 1,728 frames processed, 68 tracked vehicles,
-1,419 valid experimental distance observations, and 603
-five-frame closing-speed estimates.
-
-Only 100 motion estimates satisfied the selected full-window
-sensitivity criterion.
-
-**Limitation:** Metric estimates use hypothetical camera calibration
-and are not validated physical measurements.
-
-See [Phase 5 documentation](docs/phase5_motion_estimation.md).
-
-
-### Phase 6 — Lane-Aware Approach Evidence
-
-RoadVision includes an experimental approach-evidence
-pipeline combining:
-
-- Robust bounding-box scale-growth classification
-- Inverse-expansion time-to-contact proxy
-- Lane-aware approach classification
-- Causal temporal event stabilization
-- Annotated video and structured CSV export
-
-**Results:** On 1,728 video frames, the pipeline
-identified 1,066 apparent approach observations and
-8 stabilized ego-lane approach episodes across 4 tracks.
-
-All 39 automated tests passed, and the Phase 6
-integration validator completed successfully.
-
-**Limitation:** Detected episodes are not validated
-collision threats. The inverse-expansion proxy must
-not be interpreted as safety-certified TTC.
-
-See [Phase 6 documentation](docs/phase6_risk_assessment.md).
-
----
-
-## Running RoadVision
-
-### 1. Clone the Repository
-
-```bash
-git clone https://github.com/amedeone03/roadvision.git
-cd roadvision
-```
-
-### 2. Create a Python Environment
+The project was developed and tested with Python 3.12. Commands below are run from the repository root.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-```
-
-### 3. Install Dependencies
-
-```bash
 pip install -r requirements.txt
 ```
 
-### 4. Prepare the Input Video
-
-Place a dashcam recording at:
-
-```text
-data/videos/test_drive.mp4
-```
-
-The default configuration uses the Apple Silicon MPS backend.
-
-For other supported hardware, update the `DEVICE` setting in `scripts/run_integrated_video.py`.
-
-### 5. Run the Integrated Pipeline
+Download the YOLO11n weights into the repository root. The file is not committed.
 
 ```bash
-python -m scripts.run_integrated_video
+python -c "from ultralytics import YOLO; YOLO('yolo11n.pt')"
 ```
 
-### 6. Inspect the Outputs
+Place a driving video at `data/videos/test_drive.mp4`, or pass another file with `--input`. Videos and `*.pt` weights are ignored by Git.
 
-The final script generates:
+The default device is `mps`. On a machine without Apple Metal, pass `--device cpu` or `--device cuda`. If `mps` or `cuda` is requested and unavailable, the run stops. It does not switch to CPU.
 
-```text
-runs/
-├── integrated_final_output.mp4
-└── integrated_final.csv
-```
+## Run a video
 
-The annotated video displays:
-
-- Tracked-object IDs and classes.
-- Bounding boxes and contact points.
-- Accepted ego-lane geometry.
-- Vehicle-to-lane association states.
-- Lane availability.
-
-The CSV contains per-object observations, including:
-
-- Frame and timestamp.
-- Tracking ID and object class.
-- Detection confidence.
-- Bounding-box coordinates.
-- Vehicle contact point.
-- Final lane status and reason.
-- Original baseline classification.
-- Normalized lateral margin.
-- Geometric and temporal lane-validity information.
-
-Generated videos and experiment outputs are excluded from version control.
-
----
-
-## Testing
-
-The project includes tests for the core lane-association and temporal-filtering logic.
-
-Run them from the repository root:
+Process the reference video:
 
 ```bash
-python -m tests.test_vehicle_lane
-python -m tests.test_vehicle_lane_detailed
-python -m tests.test_vehicle_lane_conservative
-python -m tests.test_temporal_filter
+python -m roadvision run \
+    --input data/videos/test_drive.mp4 \
+    --output runs/final
 ```
 
-These tests cover:
+Process a different video on CPU:
 
-- Geometric inside/outside classification.
-- Explicit UNKNOWN states.
-- Conservative boundary handling.
-- Temporal rejection of abrupt lane changes.
-- Recovery following unstable lane estimates.
+```bash
+python -m roadvision run \
+    --input path/to/drive.mp4 \
+    --output runs/custom \
+    --device cpu
+```
 
-Passing unit tests verifies expected component behavior but does not establish perception accuracy against real-world ground truth.
+Use the checked-in configuration and stop after 100 frames:
 
----
+```bash
+python -m roadvision run \
+    --config configs/roadvision.yaml \
+    --input data/videos/test_drive.mp4 \
+    --output runs/smoke \
+    --max-frames 100
+```
 
-## Development Roadmap
+`--input`, `--output`, `--device`, and `--max-frames` override the loaded configuration in memory. They do not edit the YAML file. Omit `--config` to use the same built-in defaults.
 
-- [x] Phase 0 — Project setup and environment configuration
-- [x] Phase 1 — YOLO11n object detection
-- [x] Phase 2 — ByteTrack integration and tracker comparison
-- [x] Phase 3 — Ego-lane detection, validation, and temporal stabilization
-- [x] Phase 4 — Vehicle-to-lane association and integrated video pipeline
-- [ ] Phase 5 — Distance and relative-motion estimation
-- [ ] Phase 6 — Time-to-collision and collision-risk assessment
-- [ ] Phase 7 — Real-time optimization, extended validation, and benchmarking
+A missing video or configuration file, an unavailable accelerator, or a video-writer failure prints `error: ...` and exits with status 1. Invalid arguments exit with status 2. Ordinary user errors do not print a traceback.
 
-### Planned Next Steps
+The earlier `scripts/run_integrated_video.py` entry point remains for the Phase 4 experiment. New runs should use `python -m roadvision`.
 
-**Phase 5 — Distance and Relative Motion**
+## Configuration
 
-Investigate image-based relative-motion measurements and the assumptions required for estimating physical distances from a monocular dashcam.
+`configs/roadvision.yaml` repeats the built-in defaults.
 
-Metric distance estimates will require appropriate geometric assumptions or camera calibration.
+| Setting | Default | Role |
+|---|---|---|
+| `video.input_path` | `data/videos/test_drive.mp4` | Input video |
+| `video.output_dir` | `runs/final` | Output directory |
+| `video.max_frames` | null | Process every frame when null |
+| `detector.model_path` | `yolo11n.pt` | YOLO weights |
+| `detector.device` | `mps` | `cpu`, `mps`, or `cuda` |
+| `detector.confidence` | 0.25 | Detector confidence |
+| `detector.classes` | 0, 1, 2, 3, 5, 7 | Road-user classes |
+| `tracker.config_path` | `configs/bytetrack_threshold.yaml` | ByteTrack settings |
+| `lane_filter.max_jump` | 100 | Temporal jump limit |
+| `lane_filter.max_reference_age` | 5 | Reference lifetime |
+| `lane_filter.max_candidate_gap` | 2 | Recovery gap |
+| `lane_smoother.alpha` | 0.3 | Lane EMA weight |
+| `association.lateral_margin` | 0.05 | Boundary uncertainty |
+| `motion.robust_window` | 5 | Growth window |
+| `approach.growth_threshold` | 0.15 | Approach deadband, 1/s |
+| `time_to_contact.min_growth` | 0.15 | Minimum growth for the proxy |
+| `stabilizer.min_confirmations` | 3 | Frames before confirmation |
+| `stabilizer.max_gap` | 2 | Interruption tolerated while pending or held |
 
-**Phase 6 — Collision-Risk Assessment**
+Paths are resolved from the working directory. Unknown YAML keys are rejected. The `lane_detector` values are locked to `src/lanes/lane_detector.py` because `detect_lane()` does not accept overrides. The two 0.15 settings are independent: one classifies approach, and the other gates the inverse-expansion proxy.
 
-Investigate time-to-collision estimation and risk indicators based on tracked-object motion, with explicit handling of measurement uncertainty.
+ByteTrack's own thresholds stay in its YAML file. `new_track_thresh` is 0.40 and `track_buffer` is 30. The detector confidence of 0.25 happens to equal `track_high_thresh`, but it is a separate setting.
 
-**Phase 7 — Optimization and Validation**
+## Outputs
 
-Evaluate processing latency, robustness across different recordings, and potential improvements to detection, tracking, and lane perception.
+The output directory receives four files.
 
----
+`annotated.mp4` shows the lane polygon, track ID, class, and lane color. `IN_LANE` is yellow, `OUT_LANE` is green, and `UNKNOWN` is gray. Confirmed in-lane objects also show the approach label and the inverse-expansion proxy. A banner states that these are experimental image-space indicators, not collision warnings.
 
-## Known Limitations
+`observations.csv` has one row per tracked object. Coordinates are rounded to 2 decimals, confidence to 4, timestamp to 3, and the lateral margin to 5. `height`, `time_seconds`, growth, and the proxy use the unrounded detector box. The columns are:
 
-RoadVision currently has several important limitations:
+`frame`, `timestamp`, `track_id`, `class_id`, `class_name`, `confidence`, `x1`, `y1`, `x2`, `y2`, `contact_x`, `contact_y`, `lane_status`, `lane_reason`, `baseline_status`, `baseline_reason`, `normalized_lateral_margin`, `lane_valid`, `lane_geometry_valid`, `lane_temporal_reason`, `height`, `time_seconds`, `growth_robust_5`, `approach_state`, `tau_proxy_s`, `evidence`, `event_state`.
 
-1. **Near-field lane coverage:** The classical detector cannot reliably classify all distant vehicles.
+`events.csv` lists completed evidence episodes: `track_id`, `start_frame`, `end_frame`, `confirmation_frame`, `duration_frames`, `duration_s`, `positive_frames`, `interruption_frames`, and `min_tau_proxy_s`. Zero episodes is a valid result.
 
-2. **Approximate contact points:** Bounding-box bottom-centers do not always correspond to the actual road-contact position, particularly for large trucks.
+`metadata.json` records the effective configuration, model, tracker settings, video properties, column lists, counts, and timing. Its schema version is `1`.
 
-3. **Uncalibrated geometry:** The system does not yet provide validated metric distance measurements.
+## Tests
 
-4. **Detection and tracking errors:** Incorrect object classes, missed detections, and identity changes may occur.
+```bash
+python -m pytest tests
+```
 
-5. **Limited evaluation:** Experiments use a short driving recording and selected visual examples.
+The suite covers configuration, lane logic, motion and risk rules, the per-track processor, pipeline resources, the command-line interface, and the regression comparison. Passing tests checks the implemented behavior. It does not certify driving performance.
 
-6. **Heuristic uncertainty:** The 5% lateral margin is not a calibrated confidence estimate.
+These checks skip, rather than fail, when local reference artifacts are absent:
 
-7. **Live deployment:** Real-world camera latency and automotive deployment constraints have not been validated.
+- `tests/test_track_replay.py` replays `runs/integrated_final.csv` against the Phase 6 evidence and event tables. It also needs `data/videos/test_drive.mp4` for the measured frame rate.
+- `test_published_phase6_csv_contains_the_excluded_fields` reads `runs/phase6/final/phase6_results.csv`.
+- `test_checked_in_runtime_files_when_present` checks the default video and `yolo11n.pt` only when those files are already present.
 
-RoadVision is intended for experimentation, learning, and portfolio demonstration, not autonomous vehicle control or safety-critical decision-making.
+Those files are produced by the research workflow and are not part of a fresh clone. `runs/` is gitignored.
 
----
+## Phase 6 regression
 
-## Project Status
+On the development checkout, replaying the stored rounded boxes reproduced the Phase 6 categories exactly: 2,656 observations, event counts of 2,559 `NONE`, 62 `PENDING`, 25 `CONFIRMED`, and 10 `HELD`, and the same 8 episode boundaries. Growth and the inverse-expansion proxy matched to `1e-9` because that replay used the rounded coordinates.
 
-**Phase 4 complete — Integrated ADAS perception prototype operational.**
+The live command was then compared with the published tables:
 
-The current system detects and tracks road users, estimates the ego lane, and associates tracked objects with lane geometry while explicitly representing uncertain classifications.
+```bash
+python -m roadvision run \
+    --input data/videos/test_drive.mp4 \
+    --output runs/full_regression
 
-The next development phase focuses on distance and relative-motion estimation.
+python scripts/compare_full_pipeline.py
+```
+
+The second command reads `runs/full_regression/` and the Phase 6 CSV files under `runs/phase6/`. It writes `runs/full_regression/comparison_report.md`. The verified live result was 2,656 shared observations, 68 track IDs, identical rounded boxes, identical event states, and 8/8 identical episode boundaries. One approach label differed at frame 470, track 2, because unrounded height moved growth across −0.15/s. The comparison and frame-rate conventions are documented in [Phase 8 integration](docs/phase8_integration.md).
+
+## Phase 7 evaluation
+
+Phase 7 audited one 1,728-frame recording. The labels are a small exploratory review, including corrections made after seeing predictions. They are not an independent benchmark. Details are in [Phase 7 evaluation](docs/phase7_evaluation.md).
+
+| Area | Pilot result |
+|---|---|
+| Detection, 20 random frames | Precision 81.25%, recall 86.67%, F1 83.87%, mean matched IoU 0.8478 |
+| Lane association, random matched objects | Strict accuracy 18.9%, definite coverage 27.0%, selective accuracy 70.0% |
+| Tracking | 68 IDs, 2,656 observations, mean continuity 89.5%, 27 tracks with gaps |
+| Approach episodes | 8 episodes on 4 tracks, mean confirmation delay 2.5 frames, none independently verified as physical approach |
+| Sensitivity | The 0.15/s, 3-confirmation, gap-2 baseline was reproduced; 27 settings produced 4 to 13 episodes |
+
+Most random-subset lane predictions were `UNKNOWN`, mainly because the contact point was above the fitted lane region.
+
+## Earlier experiments
+
+- [Tracking experiments](docs/tracking_experiments.md) selected the ByteTrack threshold file: 68 IDs and 2,656 observations on the reference video.
+- [Association experiments](docs/association_experiments.md) selected the 5% lateral margin.
+- [Phase 5 distance and vanishing point](docs/phase5_motion_estimation.md) is experimental and separate from the command.
+- [Phase 6 approach evidence](docs/phase6_risk_assessment.md) defines the evidence states and the 8 published episodes.
+
+## Reference-video measurements
+
+The Phase 8 command processed the 1920×1080 reference video at its measured rate of 29.97002997002997 fps.
+
+| Measurement | Result |
+|---|---:|
+| Frames | 1,728 |
+| Pipeline time | 49.462 s |
+| Wall clock, including startup | 50.82 s |
+| Throughput | 34.936 frames/s |
+| Machine | Apple M4, MPS |
+
+That throughput is higher than this video's frame rate. It is an average over one file on one computer, not a camera-latency or deployment measurement. An earlier perception-only pipeline, without approach evidence, measured 39.30 frames/s. The Phase 1 detection-and-draw benchmark, excluding decode and file writing, measured about 75.5 frames/s. Those are different workloads.
+
+On this recording the live pipeline also reported 1,111 temporally accepted lane frames (64.29% of 1,728), 301 `IN_LANE`, 571 `OUT_LANE`, and 1,784 `UNKNOWN` observations.
+
+## Limitations
+
+Lane geometry covers the near field. Distant vehicles often remain `UNKNOWN` because their contact point is above that region. Dashes, occlusion, and nearby vehicles still make the classical lane fit unstable.
+
+Tracking IDs can break. On the reference video, 27 of 68 tracks contain gaps. A repeated ID is a tracker identity, not proof that the box belongs to the same physical object, although the live boxes matched the stored boxes on every shared key in this run.
+
+Bounding-box growth is not physical approach. The inverse-expansion value is not a measured time to collision. Monocular distances elsewhere in the repository use a hypothetical camera. Confirmed episodes were not independently verified as vehicles approaching the camera.
+
+The manual evaluation uses one short recording and a small, partly prediction-informed label set. Detection misses, class changes, and identity fragments remain possible. The 5% lane margin and the 0.15/s growth deadband are selected heuristics, not calibrated probabilities.
+
+## Project status
+
+Phases 0–8 are complete: detection, tracking, lane perception, association, experimental distance scripts, approach evidence, the Phase 7 audit, and the unified application. Phase 9 is the portfolio presentation. It is not part of this code.
+
+RoadVision is an experimental research prototype for learning and demonstration. It is not autonomous-vehicle control software.
