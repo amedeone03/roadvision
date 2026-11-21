@@ -117,6 +117,10 @@ python -m pytest tests -q
 
 Passing tests check the implemented behavior. They do not certify driving performance. Replay and published-CSV checks skip, rather than fail, when the local reference video or Phase 6 tables are absent. Those artifacts are not part of a fresh clone.
 
+## Optional Core ML backend
+
+PyTorch on MPS is the default. An experimental ONNX Runtime Core ML session is available on Apple Silicon with `--backend onnx-coreml`, `--device cpu`, and an existing static FP32 `yolo11n.onnx`. It is not a collision warning and it is not selected unless you ask for it. Setup, the export settings, and the known numerical differences are in [Optional Core ML backend](docs/optional_coreml_backend.md).
+
 ## Continuous integration
 
 Pushes to `main` and pull requests run `python -m pytest tests -q` on Ubuntu with Python 3.12. The job installs `requirements.txt`. It does not download model weights or the reference video. Tests that need those local files skip.

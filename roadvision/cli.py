@@ -18,7 +18,12 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from roadvision.config import ConfigError, RoadVisionConfig, load_config
+from roadvision.config import (
+    ConfigError,
+    RoadVisionConfig,
+    load_config,
+    validate_config,
+)
 from roadvision.pipeline import PipelineError, PipelineResult, run_video
 
 
@@ -44,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(args.config)
         config = apply_overrides(config, args)
+        validate_config(config)
         if args.profile:
             result = run_video(config, profile=True)
         else:
@@ -114,6 +120,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--backend",
+        choices=("pytorch", "onnx-coreml"),
+        help=(
+            "Inference backend. pytorch is the default. "
+            "onnx-coreml is an experimental Apple Silicon ONNX session "
+            "and requires --device cpu and an .onnx --model."
+        ),
+    )
+    run.add_argument(
+        "--model",
+        type=Path,
+        help="Weights or ONNX file. Overrides detector.model_path.",
+    )
+    run.add_argument(
         "--max-frames",
         type=_positive_frames,
         dest="max_frames",
@@ -155,6 +175,12 @@ def apply_overrides(
     if args.device is not None:
         detector = replace(detector, device=args.device)
 
+    if getattr(args, "backend", None) is not None:
+        detector = replace(detector, backend=args.backend)
+
+    if getattr(args, "model", None) is not None:
+        detector = replace(detector, model_path=str(args.model))
+
     return replace(config, video=video, detector=detector)
 
 
@@ -169,6 +195,7 @@ def print_summary(config: RoadVisionConfig, result: PipelineResult) -> None:
         str(container_frames) if container_frames is not None else "unknown"
     )
     print(f"Model: {config.detector.model_path}")
+    print(f"Backend: {config.detector.backend}")
     print(f"Device: {config.detector.device}")
     print(
         "Input: "

@@ -29,6 +29,7 @@ from roadvision.config import (
     ConfigError,
     RoadVisionConfig,
     to_mapping,
+    validate_config,
     validate_runtime_paths,
 )
 from roadvision.profiling import FrameProfiler
@@ -99,18 +100,50 @@ class YoloByteTrack:
         from ultralytics import YOLO
 
         self._config = config
-        self._model = YOLO(config.detector.model_path)
+        self._providers = None
+        self.backend_record = None
+        if config.detector.backend == "onnx-coreml":
+            from roadvision.inference import SessionProviders, coreml_providers
+
+            self._providers = SessionProviders(coreml_providers())
+            self._providers.__enter__()
+        try:
+            self._model = YOLO(config.detector.model_path)
+        except Exception:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        """Restore the ONNX Runtime constructor if this run replaced it."""
+
+        if self._providers is not None:
+            self._providers.__exit__(None, None, None)
+            self._providers = None
 
     def track(self, frame) -> list[TrackedObject]:
-        results = self._model.track(
-            frame,
-            persist=True,
-            tracker=self._config.tracker.config_path,
-            conf=self._config.detector.confidence,
-            classes=list(self._config.detector.classes),
-            device=self._config.detector.device,
-            verbose=False,
-        )
+        try:
+            results = self._model.track(
+                frame,
+                persist=True,
+                tracker=self._config.tracker.config_path,
+                conf=self._config.detector.confidence,
+                classes=list(self._config.detector.classes),
+                device=self._config.detector.device,
+                verbose=False,
+            )
+        except Exception:
+            self.close()
+            raise
+        if self._providers is not None:
+            from roadvision.inference import describe_session
+
+            try:
+                self.backend_record = describe_session(
+                    self._model,
+                    Path(self._config.detector.model_path),
+                )
+            finally:
+                self.close()
         boxes = results[0].boxes
 
         if boxes is None or boxes.id is None:
@@ -203,8 +236,17 @@ def run_video(
     ):
         raise ConfigError("video.max_frames must be >= 1 or null")
 
+    validate_config(config)
     require_device(config.detector.device)
+    if config.detector.backend == "onnx-coreml":
+        from roadvision.inference import require_coreml_runtime
+
+        require_coreml_runtime()
     validate_runtime_paths(config)
+    if config.detector.backend == "onnx-coreml":
+        from roadvision.inference import validate_onnx_model
+
+        validate_onnx_model(Path(config.detector.model_path))
 
     output_dir = Path(config.video.output_dir)
     annotated_path = output_dir / config.output.annotated_video
@@ -215,6 +257,7 @@ def run_video(
     cap = None
     writer = None
     observation_file = None
+    detector = None
     started = time.perf_counter()
 
     try:
@@ -456,6 +499,7 @@ def run_video(
             episode_count=len(episodes),
             accepted_lane_frames=accepted_lane_frames,
             elapsed_seconds=elapsed,
+            backend_record=getattr(detector, "backend_record", None),
         )
         logger.info(
             "Wrote %s frames, %s observations, %s episodes to %s",
@@ -485,6 +529,10 @@ def run_video(
 
         if cap is not None:
             cap.release()
+
+        close = getattr(detector, "close", None)
+        if close is not None:
+            close()
 
 
 def _video_properties(cap) -> tuple[float, int, int, int | None]:
@@ -604,6 +652,7 @@ def _write_metadata(
     episode_count: int,
     accepted_lane_frames: int,
     elapsed_seconds: float,
+    backend_record: dict | None = None,
 ) -> None:
     tracker_settings = _read_tracker_settings(config.tracker.config_path)
     throughput = (
@@ -659,6 +708,8 @@ def _write_metadata(
             ),
         },
     }
+    if backend_record is not None:
+        document["backend"] = backend_record
     path.write_text(
         json.dumps(document, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

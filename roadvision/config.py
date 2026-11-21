@@ -45,6 +45,7 @@ class ConfigError(ValueError):
 
 
 SUPPORTED_DEVICES = ("cpu", "mps", "cuda")
+SUPPORTED_BACKENDS = ("pytorch", "onnx-coreml")
 
 # Labels produced by src/. They are not configuration knobs.
 LANE_STATUSES = ("IN_LANE", "OUT_LANE", "UNKNOWN")
@@ -271,6 +272,11 @@ class DetectorConfig:
         "scripts/run_integrated_video.py ROAD_USER_CLASSES. "
         "COCO person, bicycle, car, motorcycle, bus, truck.",
     )
+    backend: str = _opt(
+        "pytorch",
+        "Phase 8 default. scripts/benchmark_coreml.py records "
+        "the experimental onnx-coreml provider options.",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -491,6 +497,12 @@ def to_mapping(config: RoadVisionConfig | None = None) -> dict[str, Any]:
     return mapped
 
 
+def validate_config(config: RoadVisionConfig) -> None:
+    """Reject a configuration the application cannot run."""
+
+    _validate(config)
+
+
 def load_config(path: str | Path | None = None) -> RoadVisionConfig:
     """Load defaults, optionally merged with a YAML file.
 
@@ -634,6 +646,7 @@ def _build(data: dict[str, Any]) -> RoadVisionConfig:
                 detector["classes"],
                 "detector.classes",
             ),
+            backend=_as_str(detector["backend"], "detector.backend"),
         ),
         tracker=TrackerConfig(
             config_path=_as_str(
@@ -827,6 +840,27 @@ def _validate(config: RoadVisionConfig) -> None:
             f"{allowed}. Got {config.detector.device!r}. "
             "The value is not rewritten to another device."
         )
+
+    if config.detector.backend not in SUPPORTED_BACKENDS:
+        allowed = ", ".join(SUPPORTED_BACKENDS)
+        raise ConfigError(
+            "detector.backend must be one of "
+            f"{allowed}. Got {config.detector.backend!r}."
+        )
+
+    if config.detector.backend == "onnx-coreml":
+        if config.detector.device != "cpu":
+            raise ConfigError(
+                "detector.backend 'onnx-coreml' requires detector.device "
+                f"'cpu'. Got {config.detector.device!r}. "
+                "The PyTorch device is not rewritten."
+            )
+        if Path(config.detector.model_path).suffix.lower() != ".onnx":
+            raise ConfigError(
+                "detector.backend 'onnx-coreml' requires an .onnx model. "
+                f"Got {config.detector.model_path!r}. "
+                "RoadVision does not export or download a model during a run."
+            )
 
     if not math.isfinite(config.detector.confidence) or not (
         0.0 <= config.detector.confidence <= 1.0
