@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 830" role="img" aria-labelledby="title desc">
+  <title id="title">RoadVision single-pass pipeline</title>
+  <desc id="desc">A dashcam frame goes through project lane geometry and reused YOLO11n with ByteTrack, then conservative lane association, image-space motion evidence, and four output files.</desc>
+  <rect width="920" height="830" fill="#ffffff"/>
+  <text x="460" y="34" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#334155">Single forward pass</text>
+
+  <rect x="340" y="52" width="240" height="52" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="460" y="83" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="16" font-weight="600" fill="#0f172a">Dashcam video</text>
+
+  <line x1="460" y1="104" x2="460" y2="124" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="230" y1="124" x2="690" y2="124" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="230" y1="124" x2="230" y2="148" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="690" y1="124" x2="690" y2="148" stroke="#64748b" stroke-width="1.5"/>
+
+  <rect x="48" y="148" width="364" height="214" rx="12" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="68" y="176" font-family="Helvetica, Arial, sans-serif" font-size="16" font-weight="600" fill="#0f172a">Lane geometry</text>
+  <text x="68" y="196" font-family="Helvetica, Arial, sans-serif" font-size="12" fill="#0f766e">Built in this project</text>
+  <rect x="68" y="214" width="324" height="36" rx="8" fill="#ffffff" stroke="#99f6e4" stroke-width="1"/>
+  <text x="230" y="237" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#0f172a">Lane detection</text>
+  <rect x="68" y="258" width="324" height="36" rx="8" fill="#ffffff" stroke="#99f6e4" stroke-width="1"/>
+  <text x="230" y="281" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#0f172a">Temporal lane filter</text>
+  <rect x="68" y="302" width="324" height="36" rx="8" fill="#ffffff" stroke="#99f6e4" stroke-width="1"/>
+  <text x="230" y="325" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#0f172a">Lane smoother</text>
+
+  <rect x="508" y="148" width="364" height="214" rx="12" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+  <text x="528" y="176" font-family="Helvetica, Arial, sans-serif" font-size="16" font-weight="600" fill="#0f172a">Detection and tracking</text>
+  <text x="528" y="196" font-family="Helvetica, Arial, sans-serif" font-size="12" fill="#64748b">Reused</text>
+  <rect x="528" y="230" width="324" height="44" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="690" y="257" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#0f172a">YOLO11n</text>
+  <rect x="528" y="286" width="324" height="44" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="690" y="313" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#0f172a">ByteTrack</text>
+
+  <line x1="230" y1="362" x2="230" y2="386" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="690" y1="362" x2="690" y2="386" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="230" y1="386" x2="690" y2="386" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="460" y1="386" x2="460" y2="408" stroke="#64748b" stroke-width="1.5"/>
+  <polygon points="460,416 455,406 465,406" fill="#64748b"/>
+
+  <rect x="250" y="416" width="420" height="52" rx="10" fill="#ffffff" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="460" y="447" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="16" font-weight="600" fill="#0f172a">Conservative lane association</text>
+
+  <line x1="460" y1="468" x2="460" y2="492" stroke="#64748b" stroke-width="1.5"/>
+  <polygon points="460,500 455,490 465,490" fill="#64748b"/>
+
+  <rect x="170" y="500" width="580" height="168" rx="12" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="190" y="526" font-family="Helvetica, Arial, sans-serif" font-size="16" font-weight="600" fill="#0f172a">Per track</text>
+  <text x="272" y="526" font-family="Helvetica, Arial, sans-serif" font-size="12" fill="#0f766e">Built in this project</text>
+  <text x="200" y="558" font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#0f172a">1   Robust scale growth</text>
+  <text x="490" y="558" font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#0f172a">2   Approach state</text>
+  <text x="200" y="590" font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#0f172a">3   Inverse-expansion proxy</text>
+  <text x="490" y="590" font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#0f172a">4   Lane-aware evidence</text>
+  <text x="200" y="622" font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#0f172a">5   Event stabilizer</text>
+  <text x="200" y="650" font-family="Helvetica, Arial, sans-serif" font-size="12" fill="#64748b">Causal. A missing frame clears that track.</text>
+
+  <line x1="460" y1="668" x2="460" y2="696" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="136" y1="696" x2="784" y2="696" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="136" y1="696" x2="136" y2="708" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="352" y1="696" x2="352" y2="708" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="568" y1="696" x2="568" y2="708" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="784" y1="696" x2="784" y2="708" stroke="#64748b" stroke-width="1.5"/>
+
+  <rect x="36" y="708" width="200" height="44" rx="8" fill="#ffffff" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="136" y="735" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#0f172a">annotated.mp4</text>
+  <rect x="252" y="708" width="200" height="44" rx="8" fill="#ffffff" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="352" y="735" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#0f172a">observations.csv</text>
+  <rect x="468" y="708" width="200" height="44" rx="8" fill="#ffffff" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="568" y="735" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#0f172a">events.csv</text>
+  <rect x="684" y="708" width="200" height="44" rx="8" fill="#ffffff" stroke="#0f766e" stroke-width="1.5"/>
+  <text x="784" y="735" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#0f172a">metadata.json</text>
+
+  <text x="460" y="788" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="13" fill="#64748b">Image-space evidence only — not a collision warning.</text>
+</svg>

@@ -37,6 +37,9 @@ FPS = 10.0
 
 
 def _config(tmp_path, video, *, folder="out", max_frames=None, device="cpu"):
+    # These tests replace the detector. The weights path only has to exist.
+    weights = tmp_path / "yolo11n.pt"
+    weights.write_bytes(b"")
     base = RoadVisionConfig()
     return replace(
         base,
@@ -49,7 +52,7 @@ def _config(tmp_path, video, *, folder="out", max_frames=None, device="cpu"):
         detector=replace(
             base.detector,
             device=device,
-            model_path=str(ROOT / "yolo11n.pt"),
+            model_path=str(weights),
         ),
         tracker=replace(
             base.tracker,
