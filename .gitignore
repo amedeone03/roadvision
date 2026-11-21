@@ -9,3 +9,5 @@ data/videos/*
 
 runs/
 *.pt
+
+data/evaluation/roadvision_v1/images/

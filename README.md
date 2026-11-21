@@ -1,5 +1,7 @@
 # RoadVision
 
+[![Tests](https://github.com/amedeone03/roadvision/actions/workflows/tests.yml/badge.svg)](https://github.com/amedeone03/roadvision/actions/workflows/tests.yml)
+
 RoadVision is an experimental driving-video perception pipeline. One forward pass detects road users, tracks them, associates each track with a classical lane fit, and records image-space approach evidence.
 
 This is not a validated collision-warning system, not safety-certified driver assistance, and not a source of physical time-to-collision. Confirmed labels are algorithmic patterns in the image. Do not use them to control a vehicle.
@@ -115,3 +117,9 @@ Passing tests check the implemented behavior. They do not certify driving perfor
 ## Continuous integration
 
 Pushes to `main` and pull requests run `python -m pytest tests -q` on Ubuntu with Python 3.12. The job installs `requirements.txt`. It does not download model weights or the reference video. Tests that need those local files skip.
+
+## License
+
+RoadVision's original source code is licensed under the GNU Affero General Public License, version 3 only. The complete text is in [LICENSE](LICENSE). This grant does not add the “or any later version” option.
+
+RoadVision does not own or license Ultralytics, YOLO11n, or the tracker it calls. Those terms are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
