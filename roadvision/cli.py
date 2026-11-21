@@ -44,7 +44,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(args.config)
         config = apply_overrides(config, args)
-        result = run_video(config)
+        if args.profile:
+            result = run_video(config, profile=True)
+        else:
+            result = run_video(config)
     except (ConfigError, PipelineError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -119,6 +122,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Omit it to process the whole video."
         ),
     )
+    run.add_argument(
+        "--profile",
+        action="store_true",
+        help=(
+            "Write frame_timings.csv and profiling_summary.json. "
+            "MPS and CUDA runs synchronize after inference. "
+            "Omit it to leave timing and synchronization unchanged."
+        ),
+    )
     return parser
 
 
@@ -176,6 +188,12 @@ def print_summary(config: RoadVisionConfig, result: PipelineResult) -> None:
     print(f"Observations: {result.observations_csv}")
     print(f"Events: {result.events_csv}")
     print(f"Metadata: {result.metadata_json}")
+
+    if result.frame_timings_csv is not None:
+        print(f"Frame timings: {result.frame_timings_csv}")
+
+    if result.profiling_summary_json is not None:
+        print(f"Profiling summary: {result.profiling_summary_json}")
     print(
         "Growth is calculated from unrounded detector coordinates. "
         "Bounding boxes in observations.csv are rounded to 2 decimals."

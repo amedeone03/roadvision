@@ -31,6 +31,7 @@ from roadvision.config import (
     to_mapping,
     validate_runtime_paths,
 )
+from roadvision.profiling import FrameProfiler
 from roadvision.tracks import TrackMotionProcessor
 from src.association.vehicle_lane import (
     build_lane_polygon,
@@ -87,6 +88,8 @@ class PipelineResult:
     observation_count: int
     episode_count: int
     elapsed_seconds: float
+    frame_timings_csv: Path | None = None
+    profiling_summary_json: Path | None = None
 
 
 class YoloByteTrack:
@@ -181,11 +184,17 @@ def require_device(device: str) -> None:
     )
 
 
-def run_video(config: RoadVisionConfig) -> PipelineResult:
+def run_video(
+    config: RoadVisionConfig,
+    *,
+    profile: bool = False,
+) -> PipelineResult:
     """Process ``config.video.input_path`` and write the four outputs.
 
     ``config.video.max_frames`` stops the run early when it is set.
     The measured container frame rate is passed to the track processor.
+    ``profile`` writes frame timings beside those outputs and
+    synchronizes MPS or CUDA after inference. The default does neither.
     """
 
     if (
@@ -239,6 +248,10 @@ def run_video(config: RoadVisionConfig) -> PipelineResult:
         )
         lane_smoother = LaneSmoother(alpha=config.lane_smoother.alpha)
         processor = TrackMotionProcessor(fps, config)
+        profiler = FrameProfiler(
+            enabled=profile,
+            device=config.detector.device,
+        )
 
         observation_file = observations_path.open(
             "w",
@@ -266,110 +279,144 @@ def run_video(config: RoadVisionConfig) -> PipelineResult:
             ):
                 break
 
-            ok, frame = cap.read()
+            profiler.begin_frame()
 
-            if not ok:
-                break
+            try:
+                with profiler.span("decode_ms"):
+                    ok, frame = cap.read()
 
-            if frame.shape[1] != width or frame.shape[0] != height:
-                raise PipelineError(
-                    "A decoded frame does not match the video size "
-                    f"({width}x{height})."
-                )
+                if not ok:
+                    profiler.discard_frame()
+                    break
 
-            frame_number += 1
-            _, lane_info = detect_lane(frame)
-            geometry_valid = bool(lane_info["valid"])
-            temporal_accepted, temporal_reason = lane_filter.update(
-                frame_number,
-                lane_info,
-            )
-
-            if temporal_accepted:
-                accepted_lane_frames += 1
-
-            smoothed_left, smoothed_right = lane_smoother.update(
-                lane_info,
-                temporal_accepted,
-                temporal_reason,
-            )
-            lane_left = smoothed_left if temporal_accepted else None
-            lane_right = smoothed_right if temporal_accepted else None
-            lane_polygon = None
-
-            if (
-                temporal_accepted
-                and smoothed_left is not None
-                and smoothed_right is not None
-            ):
-                lane_polygon = build_lane_polygon(
-                    smoothed_left,
-                    smoothed_right,
-                )
-
-            vehicles: list[VehicleOverlay] = []
-
-            for tracked in detector.track(frame):
-                baseline_status, baseline_reason = (
-                    classify_vehicle_lane_detailed(
-                        tracked.bbox,
-                        lane_polygon,
+                if frame.shape[1] != width or frame.shape[0] != height:
+                    raise PipelineError(
+                        "A decoded frame does not match the video size "
+                        f"({width}x{height})."
                     )
-                )
-                lane_status, lane_reason, margin = (
-                    classify_vehicle_lane_conservative(
-                        tracked.bbox,
+
+                frame_number += 1
+
+                with profiler.span("lane_detection_ms"):
+                    _, lane_info = detect_lane(frame)
+
+                geometry_valid = bool(lane_info["valid"])
+
+                with profiler.span("lane_temporal_ms"):
+                    temporal_accepted, temporal_reason = lane_filter.update(
+                        frame_number,
+                        lane_info,
+                    )
+
+                    if temporal_accepted:
+                        accepted_lane_frames += 1
+
+                    smoothed_left, smoothed_right = lane_smoother.update(
+                        lane_info,
+                        temporal_accepted,
+                        temporal_reason,
+                    )
+                    lane_left = smoothed_left if temporal_accepted else None
+                    lane_right = smoothed_right if temporal_accepted else None
+                    lane_polygon = None
+
+                    if (
+                        temporal_accepted
+                        and smoothed_left is not None
+                        and smoothed_right is not None
+                    ):
+                        lane_polygon = build_lane_polygon(
+                            smoothed_left,
+                            smoothed_right,
+                        )
+
+                with profiler.span("inference_tracking_ms"):
+                    tracked_objects = detector.track(frame)
+                    profiler.synchronize()
+
+                vehicles: list[VehicleOverlay] = []
+
+                for tracked in tracked_objects:
+                    with profiler.span("lane_association_ms"):
+                        baseline_status, baseline_reason = (
+                            classify_vehicle_lane_detailed(
+                                tracked.bbox,
+                                lane_polygon,
+                            )
+                        )
+                        lane_status, lane_reason, margin = (
+                            classify_vehicle_lane_conservative(
+                                tracked.bbox,
+                                lane_left,
+                                lane_right,
+                                margin=config.association.lateral_margin,
+                            )
+                        )
+
+                    with profiler.span("motion_event_ms"):
+                        estimate = processor.update(
+                            frame_number,
+                            tracked.track_id,
+                            tracked.bbox,
+                            lane_status,
+                        )
+
+                    with profiler.span("csv_write_ms"):
+                        observation_writer.writerow(
+                            _observation_row(
+                                frame_number=frame_number,
+                                fps=fps,
+                                tracked=tracked,
+                                lane_status=lane_status,
+                                lane_reason=lane_reason,
+                                baseline_status=baseline_status,
+                                baseline_reason=baseline_reason,
+                                margin=margin,
+                                temporal_accepted=temporal_accepted,
+                                geometry_valid=geometry_valid,
+                                temporal_reason=temporal_reason,
+                                estimate=estimate,
+                            )
+                        )
+
+                    observation_count += 1
+                    vehicles.append(
+                        VehicleOverlay(
+                            bbox=tracked.bbox,
+                            track_id=tracked.track_id,
+                            class_name=tracked.class_name,
+                            lane_status=lane_status,
+                            lane_reason=lane_reason,
+                            approach_state=estimate.approach_state,
+                            event_state=estimate.event_state,
+                            tau_proxy_s=estimate.tau_proxy_s,
+                        )
+                    )
+
+                with profiler.span("annotation_ms"):
+                    annotated = annotate_frame(
+                        frame,
                         lane_left,
                         lane_right,
-                        margin=config.association.lateral_margin,
+                        vehicles,
+                        frame_number,
+                        temporal_accepted,
                     )
-                )
-                estimate = processor.update(
-                    frame_number,
-                    tracked.track_id,
-                    tracked.bbox,
-                    lane_status,
-                )
-                observation_writer.writerow(
-                    _observation_row(
-                        frame_number=frame_number,
-                        fps=fps,
-                        tracked=tracked,
-                        lane_status=lane_status,
-                        lane_reason=lane_reason,
-                        baseline_status=baseline_status,
-                        baseline_reason=baseline_reason,
-                        margin=margin,
-                        temporal_accepted=temporal_accepted,
-                        geometry_valid=geometry_valid,
-                        temporal_reason=temporal_reason,
-                        estimate=estimate,
-                    )
-                )
-                observation_count += 1
-                vehicles.append(
-                    VehicleOverlay(
-                        bbox=tracked.bbox,
-                        track_id=tracked.track_id,
-                        class_name=tracked.class_name,
-                        lane_status=lane_status,
-                        lane_reason=lane_reason,
-                        approach_state=estimate.approach_state,
-                        event_state=estimate.event_state,
-                        tau_proxy_s=estimate.tau_proxy_s,
-                    )
-                )
 
-            annotated = annotate_frame(
-                frame,
-                lane_left,
-                lane_right,
-                vehicles,
-                frame_number,
-                temporal_accepted,
-            )
-            writer.write(annotated)
-            observation_file.flush()
+                with profiler.span("video_write_ms"):
+                    writer.write(annotated)
+
+                with profiler.span("csv_write_ms"):
+                    observation_file.flush()
+
+                profiler.end_frame(
+                    frame=frame_number,
+                    tracked_objects=len(tracked_objects),
+                    lane_association_active=bool(tracked_objects),
+                )
+            except Exception:
+                profiler.discard_frame()
+                raise
 
             if frame_number % 100 == 0:
                 logger.info("Processed %s frames", frame_number)
@@ -377,6 +424,26 @@ def run_video(config: RoadVisionConfig) -> PipelineResult:
         episodes = processor.finish()
         _write_events(events_path, episodes)
         elapsed = time.perf_counter() - started
+        timings_path = None
+        summary_path = None
+
+        if profiler.enabled:
+            timings_path, summary_path = profiler.write(
+                output_dir,
+                {
+                    "model_path": config.detector.model_path,
+                    "confidence": config.detector.confidence,
+                    "classes": list(config.detector.classes),
+                    "tracker_path": config.tracker.config_path,
+                    "video_path": config.video.input_path,
+                    "width": width,
+                    "height": height,
+                    "fps": fps,
+                    "frames_processed": frame_number,
+                    "pipeline_elapsed_seconds": elapsed,
+                },
+            )
+
         _write_metadata(
             metadata_path,
             config=config,
@@ -406,6 +473,8 @@ def run_video(config: RoadVisionConfig) -> PipelineResult:
             observation_count=observation_count,
             episode_count=len(episodes),
             elapsed_seconds=elapsed,
+            frame_timings_csv=timings_path,
+            profiling_summary_json=summary_path,
         )
     finally:
         if observation_file is not None:
