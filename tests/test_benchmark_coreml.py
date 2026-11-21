@@ -4,6 +4,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -106,6 +108,23 @@ def test_episode_windows_match_without_the_same_track_id():
     assert matched["same_bounds"] == 1
     assert matched["pairs"][0]["reference_track_id"] == "10"
     assert matched["pairs"][0]["candidate_track_id"] == "8"
+
+
+def test_forced_provider_is_restored_when_the_run_raises(monkeypatch):
+    class Package:
+        class InferenceSession:
+            pass
+
+    package = Package()
+    original = package.InferenceSession
+    monkeypatch.setitem(sys.modules, "onnxruntime", package)
+
+    with pytest.raises(RuntimeError):
+        with coreml._forced_sessions([("CoreMLExecutionProvider", {})]):
+            assert package.InferenceSession is not original
+            raise RuntimeError("stop")
+
+    assert package.InferenceSession is original
 
 
 def test_missing_onnx_runtime_exits_before_a_video(monkeypatch, capsys):

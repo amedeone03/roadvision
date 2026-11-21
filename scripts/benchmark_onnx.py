@@ -554,6 +554,10 @@ def match_boxes(
             "candidate_conf": cand_box["conf"],
             "cls": ref_box["cls"],
         }
+        for field in ("lane_status", "approach_state", "evidence", "event_state", "tau_proxy_s"):
+            if field in ref_box and field in cand_box:
+                pair[f"reference_{field}"] = ref_box[field]
+                pair[f"candidate_{field}"] = cand_box[field]
         if "track_id" in ref_box and "track_id" in cand_box:
             pair["reference_track_id"] = ref_box["track_id"]
             pair["candidate_track_id"] = cand_box["track_id"]

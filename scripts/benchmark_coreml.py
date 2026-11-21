@@ -784,6 +784,8 @@ class _forced_sessions:
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> None:
+        if self.original is None:
+            return
         import onnxruntime
 
         onnxruntime.InferenceSession = self.original
