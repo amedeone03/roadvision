@@ -1,4 +1,5 @@
 .venv/
+.venv-onnx/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -9,5 +10,6 @@ data/videos/*
 
 runs/
 *.pt
+*.onnx
 
 data/evaluation/roadvision_v1/images/
